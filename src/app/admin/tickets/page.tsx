@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { formatMoney, relativeTime } from '@/lib/format';
+import { PhoneInput } from '@/components/PhoneInput';
 import type { Ticket, TicketCategory, Gender } from '@/lib/tickets';
 import type { Event } from '@/lib/events';
 
@@ -24,7 +25,9 @@ export default function OfflineTicketingPage() {
 
   // Customer state
   const [step, setStep] = useState<Step>('identifier');
-  const [countryCode, setCountryCode] = useState('+91');
+  // `phone` is now the full E.164 string (e.g., "+917207666333"). The
+  // PhoneInput component handles country code selection + per-country digit
+  // validation. An empty string means "not yet valid".
   const [phone, setPhone] = useState('');
   const [name, setName] = useState('');
   const [gender, setGender] = useState<Gender>('male');
@@ -78,8 +81,8 @@ export default function OfflineTicketingPage() {
 
   async function loadCustomer() {
     setError(null);
-    const full = `${countryCode}${phone.replace(/\s+/g, '')}`;
-    if (!phone.trim() || phone.trim().length < 7) {
+    const full = phone; // already E.164 from PhoneInput (or '' if invalid)
+    if (!full) {
       setError('Enter a valid mobile number.');
       return;
     }
@@ -148,8 +151,9 @@ export default function OfflineTicketingPage() {
     if (!(paxN >= 1)) { setError('PAX must be at least 1.'); return; }
     const priceN = Number(price);
     if (!(priceN >= 0)) { setError('Price must be 0 or greater.'); return; }
+    if (!phone) { setError('Mobile number is required.'); return; }
 
-    const full = `${countryCode}${phone.replace(/\s+/g, '')}`;
+    const full = phone; // E.164 from PhoneInput
 
     setBusy(true);
     try {
@@ -199,7 +203,7 @@ export default function OfflineTicketingPage() {
     [tickets],
   );
 
-  const fullPhoneForBooking = `${countryCode}${phone.replace(/\s+/g, '')}`;
+  const fullPhoneForBooking = phone; // E.164 from PhoneInput
 
   return (
     <div className="max-w-4xl mx-auto px-6 md:px-8 py-6">
@@ -252,30 +256,17 @@ export default function OfflineTicketingPage() {
         {/* Mobile Number + Load */}
         <FormRow label={<>Mobile Number <Star /></>}>
           <div className="flex gap-2">
-            <select
-              className="input w-24 flex-shrink-0"
-              value={countryCode}
-              onChange={(e) => setCountryCode(e.target.value)}
-              aria-label="Country code"
-            >
-              <option value="+91">🇮🇳 +91</option>
-              <option value="+1">🇺🇸 +1</option>
-              <option value="+44">🇬🇧 +44</option>
-              <option value="+971">🇦🇪 +971</option>
-              <option value="+61">🇦🇺 +61</option>
-            </select>
-            <input
-              className="input flex-1"
-              type="tel"
-              inputMode="tel"
+            <PhoneInput
               value={phone}
-              onChange={(e) => setPhone(e.target.value.replace(/[^\d]/g, ''))}
-              placeholder="Enter mobile number"
+              onChange={setPhone}
+              placeholder="10-digit mobile number"
+              className="flex-1"
+              required
             />
             <button
               type="button"
               onClick={loadCustomer}
-              disabled={loadingCustomer || !phone.trim()}
+              disabled={loadingCustomer || !phone}
               className="btn btn-primary px-6 flex-shrink-0"
             >
               {loadingCustomer ? '…' : 'Load'}

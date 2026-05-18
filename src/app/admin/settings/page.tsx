@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ImageUpload } from '@/components/ImageUpload';
+import { PhoneInput } from '@/components/PhoneInput';
 
 interface Me { role: 'host' | 'manager' | 'cashier' | 'captain' | 'entry' }
 
@@ -129,12 +130,10 @@ export default function SettingsPage() {
             </div>
             <div>
               <label className="label">Host phone</label>
-              <input
-                className="input"
-                type="tel"
+              <PhoneInput
                 value={config.HOST_PHONE || ''}
-                onChange={(e) => set('HOST_PHONE', e.target.value)}
-                placeholder="+91…"
+                onChange={(e164) => set('HOST_PHONE', e164)}
+                placeholder="10-digit mobile number"
               />
             </div>
           </div>

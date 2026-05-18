@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { formatMoney } from '@/lib/format';
+import { PhoneInput } from '@/components/PhoneInput';
 import type { Event } from '@/lib/events';
 
 type PaymentMethod = 'cash' | 'upi' | 'card' | 'online' | 'razorpay';
@@ -273,8 +274,12 @@ function IssueClient() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="label">Phone</label>
-              <input className="input" type="tel" value={phone}
-                     onChange={(e) => setPhone(e.target.value)} placeholder="+91..." />
+              <PhoneInput
+                value={phone}
+                onChange={setPhone}
+                placeholder="10-digit mobile number"
+                required
+              />
             </div>
             <div>
               <label className="label">Email (optional)</label>

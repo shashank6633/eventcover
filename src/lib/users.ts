@@ -60,8 +60,40 @@ export function getUserByIdentifier(identifier: string, type: 'email' | 'phone')
   return getUserByPhone(identifier);
 }
 
+/**
+ * Canonicalise an Indian / international mobile number to E.164 format
+ * ("+917207666333"). Accepts a wide range of pasted formats — what humans
+ * actually type — and rejects garbage. Returns the original (trimmed) string
+ * unchanged if it can't be canonicalised, so callers downstream (validation,
+ * lookup) can decide how to handle the bad input.
+ *
+ * Recognised inputs (all produce "+917207666333"):
+ *   "7207666333"                10 digits, default to India
+ *   "917207666333"              with country code, no +
+ *   "+917207666333"             already E.164
+ *   "+91 7207 666 333"          with spaces / hyphens
+ *   "(+91) 72076-66333"         with formatting punctuation
+ *
+ * Non-Indian numbers pass through if they already have a leading +:
+ *   "+15551234567" → "+15551234567"
+ */
 export function normalizePhone(input: string): string {
-  return input.trim().replace(/\s+/g, '');
+  if (!input) return '';
+  // Strip everything except digits and a leading +
+  let cleaned = String(input).trim().replace(/[^\d+]/g, '');
+  // Drop any + that isn't the leading char
+  cleaned = cleaned.replace(/(?!^)\+/g, '');
+
+  if (!cleaned) return '';
+  if (cleaned.startsWith('+')) return cleaned;
+
+  // No + prefix — best-effort guesses for Indian numbers
+  if (cleaned.length === 10) return `+91${cleaned}`;
+  if (cleaned.length === 12 && cleaned.startsWith('91')) return `+${cleaned}`;
+  if (cleaned.length === 11 && cleaned.startsWith('0')) return `+91${cleaned.slice(1)}`;
+
+  // Unknown shape — return as-is so caller can fail validation explicitly
+  return cleaned;
 }
 
 export function normalizeEmail(input: string): string {

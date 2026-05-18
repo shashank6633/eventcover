@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { PhoneInput } from '@/components/PhoneInput';
 
 interface Me { role: 'host' | 'manager' | 'cashier' | 'captain' | 'entry'; name: string }
 
@@ -272,11 +273,11 @@ export default function WhatsAppSettingsPage() {
 
         <div>
           <label className="label">WhatsApp Business phone number <span className="text-rose-600">*</span></label>
-          <input
-            className="input"
+          <PhoneInput
             value={businessPhone}
-            onChange={(e) => setBusinessPhone(e.target.value)}
-            placeholder="+91XXXXXXXXXX"
+            onChange={setBusinessPhone}
+            placeholder="10-digit mobile number"
+            required
           />
           <div className="text-xs text-slate-500 mt-1.5">
             The verified sender number from your Interakt dashboard. Display-only —
@@ -354,12 +355,11 @@ export default function WhatsAppSettingsPage() {
           </div>
           <div>
             <label className="label">Send to (phone)</label>
-            <input
-              className="input"
-              type="tel"
+            <PhoneInput
               value={testPhone}
-              onChange={(e) => setTestPhone(e.target.value)}
-              placeholder="+91XXXXXXXXXX"
+              onChange={setTestPhone}
+              placeholder="10-digit mobile number"
+              required
             />
           </div>
         </div>

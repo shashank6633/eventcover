@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { ROLE_LABEL, ALL_ROLES, type PublicUser, type UserRole } from '@/lib/roles';
 import { relativeTime } from '@/lib/format';
+import { PhoneInput } from '@/components/PhoneInput';
 
 interface Me { id: string; name: string; role: UserRole; }
 
@@ -220,7 +221,7 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
         </div>
         <div>
           <label className="label">Phone (login)</label>
-          <input className="input" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91..." />
+          <PhoneInput value={phone} onChange={setPhone} placeholder="10-digit mobile number" required />
         </div>
         <div>
           <label className="label">Email (optional)</label>

@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { PhoneInput } from '@/components/PhoneInput';
 
 type IdType = 'email' | 'phone';
 type Step = 'identifier' | 'code';
@@ -187,17 +188,26 @@ function LoginClient() {
               <label className="label">
                 {idType === 'email' ? 'Email Id' : 'Mobile Number'} <span className="text-rose-600">*</span>
               </label>
-              <input
-                key={idType}
-                className="input"
-                type={idType === 'email' ? 'email' : 'tel'}
-                inputMode={idType === 'email' ? 'email' : 'tel'}
-                value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-                placeholder={idType === 'email' ? 'Enter your email id' : 'Enter your mobile number (+91…)'}
-                autoFocus
-                autoComplete={idType === 'email' ? 'email' : 'tel'}
-              />
+              {idType === 'email' ? (
+                <input
+                  className="input"
+                  type="email"
+                  inputMode="email"
+                  value={identifier}
+                  onChange={(e) => setIdentifier(e.target.value)}
+                  placeholder="Enter your email id"
+                  autoFocus
+                  autoComplete="email"
+                />
+              ) : (
+                <PhoneInput
+                  value={identifier}
+                  onChange={(e164) => setIdentifier(e164)}
+                  placeholder="10-digit mobile number"
+                  autoFocus
+                  required
+                />
+              )}
             </div>
 
             <button className="btn btn-primary w-full" disabled={busy}>
