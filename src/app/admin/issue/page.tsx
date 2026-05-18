@@ -602,7 +602,9 @@ function BillCard({
         </label>
       </div>
 
-      <div className="mt-3 grid grid-cols-3 gap-2 sm:gap-3">
+      {/* Mobile: each tile takes the full row (wide rectangle) so a big amount
+          like ₹24,000 never overflows. Desktop: 3-column grid stays as before. */}
+      <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3">
         <BillCell
           label="Entry"
           value={entry}
@@ -620,15 +622,17 @@ function BillCard({
           note="wallet"
           accent
         />
-        <div className="rounded-lg bg-white border-2 border-brand-300 p-2.5 text-center">
-          <div className="text-[10px] uppercase tracking-wider text-brand-700 font-semibold whitespace-nowrap">
-            Total
+        <div className="rounded-lg bg-white border-2 border-brand-300 p-3 flex items-center justify-between sm:flex-col sm:text-center">
+          <div className="flex sm:flex-col sm:items-center">
+            <div className="text-[11px] uppercase tracking-wider text-brand-700 font-semibold whitespace-nowrap">
+              Total
+            </div>
+            <div className="text-[10px] text-slate-500 sm:mt-1 ml-2 sm:ml-0 whitespace-nowrap">
+              at door
+            </div>
           </div>
-          <div className="text-lg sm:text-xl font-bold text-brand-700 mt-1 leading-none">
+          <div className="text-xl sm:text-xl font-bold text-brand-700 sm:mt-1 leading-none whitespace-nowrap">
             {formatMoney(total)}
-          </div>
-          <div className="text-[10px] text-slate-500 mt-1 whitespace-nowrap">
-            at door
           </div>
         </div>
       </div>
@@ -648,12 +652,17 @@ function BillCell({
   accent?: boolean;
 }) {
   return (
-    <div className="rounded-lg bg-white border border-slate-200 p-2.5 text-center">
-      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold whitespace-nowrap">
-        {label}
+    <div className="rounded-lg bg-white border border-slate-200 p-3 flex items-center justify-between sm:flex-col sm:text-center">
+      <div className="flex sm:flex-col sm:items-center">
+        <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold whitespace-nowrap">
+          {label}
+        </div>
+        <div className="text-[10px] text-slate-400 sm:mt-1 ml-2 sm:ml-0 whitespace-nowrap">
+          {note}
+        </div>
       </div>
       {editable ? (
-        <div className="relative mt-1">
+        <div className="relative w-28 sm:w-full sm:mt-1">
           <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-slate-500 text-sm">₹</span>
           <input
             type="number"
@@ -664,11 +673,10 @@ function BillCell({
           />
         </div>
       ) : (
-        <div className={`text-lg sm:text-xl font-bold mt-1 leading-none ${accent ? 'text-emerald-700' : 'text-slate-900'}`}>
+        <div className={`text-xl font-bold sm:mt-1 leading-none whitespace-nowrap ${accent ? 'text-emerald-700' : 'text-slate-900'}`}>
           {formatMoney(value)}
         </div>
       )}
-      <div className="text-[10px] text-slate-500 mt-1 whitespace-nowrap">{note}</div>
     </div>
   );
 }
