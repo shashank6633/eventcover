@@ -538,9 +538,11 @@ function Counter({
 }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-3">
-      <div className="flex items-baseline justify-between">
-        <span className="text-xs font-semibold text-slate-700">{label}</span>
-        <span className="text-[10px] text-slate-400">{subLabel ?? '1 pax'}</span>
+      <div className="flex flex-col">
+        <span className="text-sm font-semibold text-slate-900 leading-tight">{label}</span>
+        <span className="text-[10px] text-slate-400 uppercase tracking-wider mt-0.5 whitespace-nowrap">
+          {subLabel ?? '1 pax'}
+        </span>
       </div>
       <div className="flex items-center mt-2 border border-slate-200 rounded-lg overflow-hidden">
         <button
@@ -610,14 +612,14 @@ function BillCard({
         </label>
       </div>
 
-      <div className="mt-3 grid grid-cols-3 gap-3">
+      <div className="mt-3 grid grid-cols-3 gap-2 sm:gap-3">
         <BillCell
           label="Entry"
           value={entry}
           editable={override}
           inputValue={entryOverride}
           onChange={onEntryChange}
-          note="not redeemable"
+          note="non-refundable"
         />
         <BillCell
           label="Cover"
@@ -625,13 +627,19 @@ function BillCard({
           editable={override}
           inputValue={coverOverride}
           onChange={onCoverChange}
-          note="wallet balance"
+          note="wallet"
           accent
         />
-        <div className="rounded-lg bg-white border border-brand-200 p-2.5">
-          <div className="text-[10px] uppercase tracking-wider text-slate-500">Collect at door</div>
-          <div className="text-xl font-bold text-brand-700 mt-1">{formatMoney(total)}</div>
-          <div className="text-[10px] text-slate-400 mt-0.5">entry + cover</div>
+        <div className="rounded-lg bg-white border-2 border-brand-300 p-2.5 text-center">
+          <div className="text-[10px] uppercase tracking-wider text-brand-700 font-semibold whitespace-nowrap">
+            Total
+          </div>
+          <div className="text-lg sm:text-xl font-bold text-brand-700 mt-1 leading-none">
+            {formatMoney(total)}
+          </div>
+          <div className="text-[10px] text-slate-500 mt-1 whitespace-nowrap">
+            at door
+          </div>
         </div>
       </div>
     </div>
@@ -650,25 +658,27 @@ function BillCell({
   accent?: boolean;
 }) {
   return (
-    <div className="rounded-lg bg-white border border-slate-200 p-2.5">
-      <div className="text-[10px] uppercase tracking-wider text-slate-500">{label}</div>
+    <div className="rounded-lg bg-white border border-slate-200 p-2.5 text-center">
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold whitespace-nowrap">
+        {label}
+      </div>
       {editable ? (
         <div className="relative mt-1">
-          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 text-sm">₹</span>
+          <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-slate-500 text-sm">₹</span>
           <input
             type="number"
             min={0}
             value={inputValue}
             onChange={(e) => onChange(e.target.value)}
-            className="w-full pl-5 pr-1 py-0.5 text-base font-bold outline-none border-b border-slate-300 focus:border-brand-500 bg-transparent"
+            className="w-full pl-4 pr-1 py-0.5 text-base font-bold text-center outline-none border-b border-slate-300 focus:border-brand-500 bg-transparent"
           />
         </div>
       ) : (
-        <div className={`text-base font-bold mt-1 ${accent ? 'text-emerald-700' : 'text-slate-900'}`}>
+        <div className={`text-lg sm:text-xl font-bold mt-1 leading-none ${accent ? 'text-emerald-700' : 'text-slate-900'}`}>
           {formatMoney(value)}
         </div>
       )}
-      <div className="text-[10px] text-slate-400 mt-0.5">{note}</div>
+      <div className="text-[10px] text-slate-500 mt-1 whitespace-nowrap">{note}</div>
     </div>
   );
 }
