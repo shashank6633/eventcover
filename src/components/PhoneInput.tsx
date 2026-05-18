@@ -125,18 +125,22 @@ export function PhoneInput({
   const showError = required && national.length > 0 && !isValid(country, national);
 
   return (
-    <div className={`flex items-stretch gap-2 ${className ?? ''}`}>
+    <div className={`flex items-stretch gap-2 min-w-0 ${className ?? ''}`}>
       <select
-        className="input !w-auto pl-3 pr-8 font-medium"
+        // Compact width — fits "🇮🇳 +91" with a tight padding budget. The
+        // !important w-[88px] guarantees the select doesn't expand to fill a
+        // flex container and starve the national number input next to it,
+        // which was the root cause of the "+9'" truncation in narrow grid
+        // cells on mobile.
+        className="input flex-shrink-0 !w-[104px] md:!w-[112px] !pl-2.5 !pr-7 !text-sm font-medium"
         value={country.iso}
         onChange={(e) => handleCountryChange(e.target.value)}
         disabled={disabled}
         aria-label="Country code"
-        style={{ maxWidth: 110 }}
       >
         {COUNTRIES.map((c) => (
           <option key={c.iso} value={c.iso}>
-            {c.flag}  {c.code}
+            {c.flag} {c.code}
           </option>
         ))}
       </select>
@@ -145,7 +149,7 @@ export function PhoneInput({
         inputMode="numeric"
         pattern="[0-9]*"
         autoComplete="tel-national"
-        className={`input flex-1 ${showError ? '!border-rose-300' : ''}`}
+        className={`input flex-1 min-w-0 ${showError ? '!border-rose-300' : ''}`}
         value={national}
         onChange={(e) => handleNationalChange(e.target.value)}
         placeholder={placeholder}

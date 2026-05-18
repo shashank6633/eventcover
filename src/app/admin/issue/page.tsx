@@ -271,7 +271,7 @@ function IssueClient() {
             <input className="input" value={name} onChange={(e) => setName(e.target.value)}
                    placeholder="e.g. Rohit Kumar" autoFocus />
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="label">Phone</label>
               <PhoneInput

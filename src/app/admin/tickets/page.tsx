@@ -255,7 +255,11 @@ export default function OfflineTicketingPage() {
 
         {/* Mobile Number + Load */}
         <FormRow label={<>Mobile Number <Star /></>}>
-          <div className="flex gap-2">
+          {/* Stack on mobile (Load button below) so the PhoneInput gets the
+              full row width and the country dropdown + national number both
+              have room. Side-by-side again from md+ where horizontal space is
+              ample. */}
+          <div className="flex flex-col sm:flex-row gap-2">
             <PhoneInput
               value={phone}
               onChange={setPhone}
@@ -267,7 +271,7 @@ export default function OfflineTicketingPage() {
               type="button"
               onClick={loadCustomer}
               disabled={loadingCustomer || !phone}
-              className="btn btn-primary px-6 flex-shrink-0"
+              className="btn btn-primary px-6 sm:flex-shrink-0"
             >
               {loadingCustomer ? '…' : 'Load'}
             </button>
