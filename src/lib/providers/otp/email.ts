@@ -60,8 +60,15 @@ export const emailOtpProvider: OtpProvider = {
       return { ok: false, channel: 'email', error: 'SMTP credentials missing — set SMTP_USER + SMTP_PASS' };
     }
 
-    let nodemailer: typeof import('nodemailer');
+    // nodemailer is an optional runtime dependency — only required if the host
+    // selects 'email' as their OTP provider. We dynamic-import + ts-expect-error
+    // so production builds don't fail when nodemailer isn't installed (which is
+    // the default for venues using WhatsApp/console as their delivery channel).
+    let nodemailer: {
+      createTransport: (opts: unknown) => { sendMail: (msg: unknown) => Promise<{ messageId: string }> };
+    };
     try {
+      // @ts-expect-error -- nodemailer is intentionally not a hard dependency
       nodemailer = await import('nodemailer');
     } catch {
       return {

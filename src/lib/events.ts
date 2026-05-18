@@ -166,7 +166,7 @@ function parseTableTypes(json: string): TableType[] {
       if ('max_per_booking' in t) out.max_per_booking = Number(t.max_per_booking) || 0;
       if ('inventory' in t) out.inventory = Number(t.inventory) || 0;
       if (Array.isArray(t.time_slots)) {
-        out.time_slots = (t.time_slots as Record<string, unknown>[]).map((s) => ({
+        out.time_slots = (t.time_slots as unknown as Record<string, unknown>[]).map((s) => ({
           id: typeof s.id === 'string' && s.id ? s.id : nanoid(),
           start: String(s.start || ''),
           end: String(s.end || ''),

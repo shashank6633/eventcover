@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getEvent, updateEvent, deleteEvent } from '@/lib/events';
-import { validatePaxRules, validateBookingTypes } from '../route';
+import { validatePaxRules, validateBookingTypes } from '@/lib/events-validators';
 import { requireRole } from '@/lib/auth';
 
 export const runtime = 'nodejs';

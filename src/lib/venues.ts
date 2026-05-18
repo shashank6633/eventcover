@@ -120,7 +120,7 @@ export function updateVenue(id: string, patch: UpdateVenueInput, actor: string):
 
   const db = getDb();
   db.prepare(`UPDATE venues SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-  logAudit({ actor, action: 'venue_update', entityType: 'venue', entityId: id, details: patch });
+  logAudit({ actor, action: 'venue_update', entityType: 'venue', entityId: id, details: patch as unknown as Record<string, unknown> });
   return getVenue(id);
 }
 

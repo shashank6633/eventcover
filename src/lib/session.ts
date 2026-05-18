@@ -66,7 +66,15 @@ export async function verifySession(token: string, secret: string): Promise<Sess
 
     const key = await hmacKey(secret);
     const sigBytes = b64urlDecode(sigB64);
-    const valid = await crypto.subtle.verify('HMAC', key, sigBytes, jsonBytes);
+    // TS 5.x strict-typing of Uint8Array<ArrayBufferLike> doesn't match
+    // BufferSource expectations on some platforms (SharedArrayBuffer concern).
+    // Cast through BufferSource — the underlying buffer is always a real ArrayBuffer in our code path.
+    const valid = await crypto.subtle.verify(
+      'HMAC',
+      key,
+      sigBytes as unknown as BufferSource,
+      jsonBytes as unknown as BufferSource,
+    );
     if (!valid) return null;
     return payload;
   } catch {

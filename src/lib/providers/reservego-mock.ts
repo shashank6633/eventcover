@@ -11,14 +11,14 @@
 import type { ReservationProvider, ProviderReservation } from './reservation';
 
 const FAKE_GUESTS: Omit<ProviderReservation, 'externalRef'>[] = [
-  { name: 'Rohit Kumar', phone: '+919876500001', email: 'rohit.k@example.in', pax: 2, arrivalTime: '21:30', notes: 'couple — anniversary' },
-  { name: 'Priya Menon',  phone: '+919876500002', email: 'priya.m@example.in', pax: 4, arrivalTime: '22:00', notes: 'friends' },
-  { name: 'Arjun Reddy',  phone: '+919876500003', email: null,                 pax: 1, arrivalTime: '22:15', notes: 'stag' },
-  { name: 'Sana Iyer',    phone: '+919876500004', email: 'sana@example.in',    pax: 6, arrivalTime: '22:30', notes: 'birthday group' },
-  { name: 'Vikram Shah',  phone: '+919876500005', email: null,                 pax: 2, arrivalTime: '23:00', notes: null },
-  { name: 'Akash Gupta',  phone: '+919876500006', email: 'akash@example.in',   pax: 8, arrivalTime: '23:15', notes: 'corporate team' },
-  { name: 'Neha Rao',     phone: '+919876500007', email: 'neha.r@example.in',  pax: 3, arrivalTime: '23:30', notes: 'VIP' },
-  { name: 'Karan Bedi',   phone: '+919876500008', email: null,                 pax: 1, arrivalTime: '00:15', notes: 'late arrival' },
+  { name: 'Rohit Kumar', phone: '+919876500001', email: 'rohit.k@example.in', pax: 2, arrivalTime: '21:30', notes: 'couple — anniversary', raw: {} },
+  { name: 'Priya Menon',  phone: '+919876500002', email: 'priya.m@example.in', pax: 4, arrivalTime: '22:00', notes: 'friends',              raw: {} },
+  { name: 'Arjun Reddy',  phone: '+919876500003', email: null,                 pax: 1, arrivalTime: '22:15', notes: 'stag',                 raw: {} },
+  { name: 'Sana Iyer',    phone: '+919876500004', email: 'sana@example.in',    pax: 6, arrivalTime: '22:30', notes: 'birthday group',       raw: {} },
+  { name: 'Vikram Shah',  phone: '+919876500005', email: null,                 pax: 2, arrivalTime: '23:00', notes: null,                   raw: {} },
+  { name: 'Akash Gupta',  phone: '+919876500006', email: 'akash@example.in',   pax: 8, arrivalTime: '23:15', notes: 'corporate team',       raw: {} },
+  { name: 'Neha Rao',     phone: '+919876500007', email: 'neha.r@example.in',  pax: 3, arrivalTime: '23:30', notes: 'VIP',                  raw: {} },
+  { name: 'Karan Bedi',   phone: '+919876500008', email: null,                 pax: 1, arrivalTime: '00:15', notes: 'late arrival',         raw: {} },
 ];
 
 export const reservegoMock: ReservationProvider = {
