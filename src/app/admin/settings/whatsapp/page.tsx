@@ -38,6 +38,8 @@ export default function WhatsAppSettingsPage() {
   // Form state
   const [apiSecret, setApiSecret] = useState('');
   const [businessPhone, setBusinessPhone] = useState('');
+  /** When true, OTP_PROVIDER is set to 'whatsapp' (Interakt). When false, falls back to 'console'. */
+  const [useWhatsAppForOtp, setUseWhatsAppForOtp] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -81,6 +83,7 @@ export default function WhatsAppSettingsPage() {
       });
       setBusinessPhone(c.INTERAKT_BUSINESS_PHONE || '');
       setApiSecret(c.INTERAKT_API_SECRET === MASKED ? MASKED : '');
+      setUseWhatsAppForOtp(c.OTP_PROVIDER === 'whatsapp');
       setLoaded(true);
     });
     refreshStatus();
@@ -101,6 +104,9 @@ export default function WhatsAppSettingsPage() {
           updates: {
             INTERAKT_API_SECRET: apiSecret,
             INTERAKT_BUSINESS_PHONE: businessPhone,
+            // Flip the OTP delivery channel together with credentials so the
+            // host has one save button for the whole flow.
+            OTP_PROVIDER: useWhatsAppForOtp ? 'whatsapp' : 'console',
           },
         }),
       });
@@ -277,6 +283,34 @@ export default function WhatsAppSettingsPage() {
             Interakt knows the sender from your account; this is shown on the
             Settings page so operators can confirm the right account is connected.
           </div>
+        </div>
+
+        {/* OTP delivery channel toggle */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-1 accent-brand-500 cursor-pointer"
+              checked={useWhatsAppForOtp}
+              onChange={(e) => setUseWhatsAppForOtp(e.target.checked)}
+              disabled={!config.secretMasked && !apiSecret}
+            />
+            <div className="flex-1">
+              <div className="text-sm font-semibold text-slate-900">
+                Use WhatsApp for OTP login
+              </div>
+              <div className="text-xs text-slate-500 mt-1">
+                When ON, login OTPs are sent via the approved <span className="font-mono">akan_login_otp</span>
+                {' '}template (Auto-fill on Android, Copy code button). When OFF, codes print to the
+                server console for dev mode.
+              </div>
+              {!config.secretMasked && !apiSecret && (
+                <div className="text-[11px] text-amber-700 mt-1.5">
+                  Save an Interakt API secret first to enable this toggle.
+                </div>
+              )}
+            </div>
+          </label>
         </div>
 
         {error && (

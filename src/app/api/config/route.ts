@@ -25,6 +25,9 @@ const EDITABLE_KEYS = new Set([
   // WhatsApp / Interakt (host-only sub-page)
   'INTERAKT_API_SECRET',
   'INTERAKT_BUSINESS_PHONE',
+  'OTP_PROVIDER',           // 'console' (dev) | 'whatsapp' (production via Interakt) | 'email'
+  'WHATSAPP_OTP_TEMPLATE',  // approved template slug, defaults to 'akan_login_otp'
+  'WHATSAPP_OTP_LANGUAGE',  // language code, defaults to 'en'
   // Legacy / fallback — kept writable so per-event config can still seed the
   // global default, but no longer surfaced on the Settings page.
   'EVENT_NAME',
