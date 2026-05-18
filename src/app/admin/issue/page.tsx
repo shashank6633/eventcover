@@ -544,30 +544,20 @@ function Counter({
           {subLabel ?? '1 pax'}
         </span>
       </div>
-      <div className="flex items-center mt-2 border border-slate-200 rounded-lg overflow-hidden">
-        <button
-          type="button"
-          onClick={() => onAdj(-1)}
-          className="px-3 py-1.5 text-slate-500 hover:bg-slate-50"
-          aria-label={`Decrease ${label}`}
-        >
-          −
-        </button>
+      {/* Plain number input — no stepper buttons. Bouncer taps and types the
+          count; mobile shows a numeric keyboard. Removes the cramped −/+
+          buttons that crowded out the input on narrow mobile tiles. */}
+      <div className="mt-2">
         <input
-          className="flex-1 text-center text-base font-semibold outline-none py-1.5 bg-transparent"
+          className="input text-center text-lg font-bold py-1.5 px-2"
           type="number"
+          inputMode="numeric"
+          pattern="[0-9]*"
           min={0}
           value={value}
           onChange={(e) => onSet(Math.max(0, Number(e.target.value) || 0))}
+          aria-label={`${label} count`}
         />
-        <button
-          type="button"
-          onClick={() => onAdj(1)}
-          className="px-3 py-1.5 text-slate-500 hover:bg-slate-50"
-          aria-label={`Increase ${label}`}
-        >
-          +
-        </button>
       </div>
       {rate != null && rate > 0 && (
         <div className="mt-1.5 text-[10px] text-slate-400 text-center">
