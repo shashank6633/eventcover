@@ -1,0 +1,45 @@
+# dependencies / build artifacts
+node_modules
+.next
+out
+dist
+coverage
+
+# SQLite database + write-ahead-log + journals — contains real venue data,
+# guest PII, and PIN hashes. Must never reach git.
+data/
+
+# Generated PDFs (regenerated on demand, not source-of-truth)
+sample-pass.pdf
+*.tmp.pdf
+/tmp/
+
+# Local secrets — never commit
+.env
+.env.local
+.env.production
+.env.development.local
+.env.production.local
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log
+.npm/
+
+# Mac extended attributes
+._*
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Local environment files Next.js might emit
+.env*.local
