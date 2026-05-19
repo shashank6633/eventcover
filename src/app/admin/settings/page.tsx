@@ -15,6 +15,7 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [whatsappConnected, setWhatsappConnected] = useState(false);
+  const [reservegoStatus, setReservegoStatus] = useState<'healthy' | 'untested' | 'not_configured' | 'error'>('not_configured');
 
   useEffect(() => {
     fetch('/api/auth/me').then((r) => r.json()).then((d) => { if (d?.ok) setMe(d.user); });
@@ -28,6 +29,9 @@ export default function SettingsPage() {
         setLoaded(true);
       }
     });
+    fetch('/api/reservations/webhook-status').then((r) => r.json()).then((d) => {
+      if (d?.ok) setReservegoStatus(d.health);
+    }).catch(() => { /* non-blocking */ });
   }, []);
 
   function set(key: string, value: string) {
@@ -205,6 +209,32 @@ export default function SettingsPage() {
                       : 'bg-slate-50 text-slate-500 border-slate-200'
                   }`}>
                     {whatsappConnected ? 'Connected' : 'Not configured'}
+                  </span>
+                  <span className="text-slate-400 text-sm">→</span>
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/admin/settings/reservego"
+                  className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50 transition"
+                >
+                  <span className="w-9 h-9 rounded-lg bg-sky-50 text-sky-700 flex items-center justify-center flex-shrink-0 font-bold text-sm">
+                    Rg
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-slate-900">Reservego webhook</div>
+                    <div className="text-xs text-slate-500">Receive reservations live from Reservego</div>
+                  </div>
+                  <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+                    reservegoStatus === 'healthy'  ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                    reservegoStatus === 'error'    ? 'bg-rose-50 text-rose-700 border-rose-200' :
+                    reservegoStatus === 'untested' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                                                    'bg-slate-50 text-slate-500 border-slate-200'
+                  }`}>
+                    {reservegoStatus === 'healthy'  ? 'Connected' :
+                     reservegoStatus === 'error'    ? 'Error' :
+                     reservegoStatus === 'untested' ? 'Untested' :
+                                                     'Not configured'}
                   </span>
                   <span className="text-slate-400 text-sm">→</span>
                 </Link>

@@ -122,7 +122,7 @@ export default function CashierPage() {
   return (
     <div className="max-w-6xl mx-auto px-6 md:px-8 py-6">
       {/* Top stats row */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <DateRangePicker
           from={from} to={to} editing={editingRange}
           onEdit={() => setEditingRange(true)}
@@ -130,23 +130,23 @@ export default function CashierPage() {
           onApply={(f, t) => { setFrom(f); setTo(t); setEditingRange(false); }}
         />
         <div className="text-sm flex flex-wrap gap-x-6 gap-y-1">
-          <span className="text-slate-500">Unsettled: <b className="text-slate-900 ml-1">{formatINR(totals?.unsettled_amount ?? 0)}</b></span>
-          <span className="text-slate-500">Settled: <b className="text-emerald-700 ml-1">{formatINR(totals?.settled_amount ?? 0)}</b></span>
+          <span className="text-slate-500 whitespace-nowrap">Unsettled: <b className="text-slate-900 ml-1">{formatINR(totals?.unsettled_amount ?? 0)}</b></span>
+          <span className="text-slate-500 whitespace-nowrap">Settled: <b className="text-emerald-700 ml-1">{formatINR(totals?.settled_amount ?? 0)}</b></span>
         </div>
       </div>
 
       {/* Summary card */}
       <div className="mt-4 rounded-xl border border-slate-200 bg-white overflow-hidden">
         <button type="button" onClick={() => setSummaryOpen(!summaryOpen)}
-                className="w-full flex items-center justify-between px-5 py-3">
-          <div className="flex items-center gap-8">
+                className="w-full flex items-center justify-between px-5 py-3 gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-8 min-w-0">
             <div className="text-left">
               <div className="text-[10px] uppercase tracking-wider text-slate-500">Total Incoming</div>
-              <div className="text-lg font-bold text-slate-900">{formatINR(totals?.total_incoming ?? 0)}</div>
+              <div className="text-lg font-bold text-slate-900 whitespace-nowrap">{formatINR(totals?.total_incoming ?? 0)}</div>
             </div>
             <div className="text-left">
               <div className="text-[10px] uppercase tracking-wider text-slate-500">Total Cover charge</div>
-              <div className="text-lg font-bold text-slate-900">{formatINR(totals?.total_cover_charge ?? 0)}</div>
+              <div className="text-lg font-bold text-slate-900 whitespace-nowrap">{formatINR(totals?.total_cover_charge ?? 0)}</div>
             </div>
           </div>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
@@ -155,7 +155,7 @@ export default function CashierPage() {
           </svg>
         </button>
         {summaryOpen && (
-          <div className="px-5 pb-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm border-t border-slate-100 pt-3">
+          <div className="px-5 pb-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm border-t border-slate-100 pt-3">
             <Stat label="Transactions" value={String(totals?.txn_count ?? 0)} />
             <Stat label="Avg redemption" value={
               totals && totals.txn_count > 0
@@ -173,13 +173,13 @@ export default function CashierPage() {
       </div>
 
       {/* Tabs */}
-      <div className="mt-5 flex gap-2 border-b border-slate-200">
+      <div className="mt-5 flex flex-wrap gap-2 border-b border-slate-200">
         <TabBtn active={tab === 'unsettled'} onClick={() => setTab('unsettled')}>Non Settled Transactions</TabBtn>
         <TabBtn active={tab === 'settled'} onClick={() => setTab('settled')}>Settled Transactions</TabBtn>
       </div>
 
       {/* Filter row */}
-      <div className="mt-4 grid grid-cols-1 md:grid-cols-[1fr,260px,auto] gap-3 items-end">
+      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1fr,260px,auto] gap-3 items-end">
         <div>
           <label className="label">Search</label>
           <div className="relative">
@@ -202,7 +202,7 @@ export default function CashierPage() {
             {captains.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
-        <button type="button" onClick={downloadCsv} className="btn btn-secondary inline-flex items-center gap-2 whitespace-nowrap">
+        <button type="button" onClick={downloadCsv} className="btn btn-secondary inline-flex items-center justify-center gap-2 whitespace-nowrap sm:col-span-2 md:col-span-1">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <path d="M7 10l5 5 5-5M12 15V3"/>
@@ -235,7 +235,7 @@ export default function CashierPage() {
                         <div className="text-xs text-slate-500">{t.customer_phone}</div>
                       </div>
                       <div className="text-right flex-shrink-0">
-                        <div className="text-lg font-bold text-slate-900">{formatINR(t.amount)}</div>
+                        <div className="text-lg font-bold text-slate-900 whitespace-nowrap">{formatINR(t.amount)}</div>
                         {t.settled ? (
                           <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 mt-1">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
@@ -295,7 +295,7 @@ export default function CashierPage() {
 
             {/* DESKTOP — full table */}
             <div className="hidden md:block rounded-xl border border-slate-200 bg-white overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full text-sm min-w-[900px]">
                 <thead>
                   <tr className="text-left text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-200">
                     <th className="px-4 py-3 font-semibold">Invoice No</th>
@@ -316,12 +316,12 @@ export default function CashierPage() {
                     const canUnsettle = t.settled && isAdmin;
                     return (
                       <tr key={t.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/40">
-                        <td className="px-4 py-3 font-mono text-xs text-slate-700">{t.invoice_no}</td>
-                        <td className="px-4 py-3 font-semibold text-slate-900">{formatINR(t.amount)}</td>
+                        <td className="px-4 py-3 font-mono text-xs text-slate-700 whitespace-nowrap">{t.invoice_no}</td>
+                        <td className="px-4 py-3 font-semibold text-slate-900 whitespace-nowrap">{formatINR(t.amount)}</td>
                         <td className="px-4 py-3 text-slate-700">{t.captain}</td>
                         <td className="px-4 py-3 text-slate-700">{t.customer_name}</td>
-                        <td className="px-4 py-3 text-slate-700">{t.customer_phone}</td>
-                        <td className="px-4 py-3 text-xs">
+                        <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{t.customer_phone}</td>
+                        <td className="px-4 py-3 text-xs whitespace-nowrap">
                           <div className="text-slate-900">{formatDate(t.created_at)}</div>
                           <div className="text-slate-500">{formatTime(t.created_at)}</div>
                         </td>
@@ -397,10 +397,10 @@ function DateRangePicker({
 
   if (editing) {
     return (
-      <div className="flex items-center gap-2 flex-wrap">
-        <input className="input text-sm" type="datetime-local" value={fromInput} onChange={(e) => setFromInput(e.target.value)} />
-        <span className="text-slate-400">–</span>
-        <input className="input text-sm" type="datetime-local" value={toInput} onChange={(e) => setToInput(e.target.value)} />
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2 flex-wrap">
+        <input className="input text-sm w-full sm:w-auto" type="datetime-local" value={fromInput} onChange={(e) => setFromInput(e.target.value)} />
+        <span className="text-slate-400 hidden sm:inline">–</span>
+        <input className="input text-sm w-full sm:w-auto" type="datetime-local" value={toInput} onChange={(e) => setToInput(e.target.value)} />
         <button
           type="button"
           className="btn btn-primary text-xs px-4 py-2"
@@ -420,13 +420,13 @@ function DateRangePicker({
   }
 
   return (
-    <div className="flex items-center gap-3">
-      <div className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-slate-500">
+    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+      <div className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm min-w-0">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-slate-500 flex-shrink-0">
           <rect x="3" y="5" width="18" height="16" rx="2"/>
           <path d="M3 9h18M8 3v4M16 3v4"/>
         </svg>
-        <span className="text-slate-700">{formatRangeFull(from, to)}</span>
+        <span className="text-slate-700 truncate">{formatRangeFull(from, to)}</span>
       </div>
       <button type="button" onClick={onEdit} className="btn btn-primary px-4 py-2 text-sm">
         Edit

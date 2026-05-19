@@ -46,7 +46,7 @@ export default function PeoplePage() {
       <div className="text-[11px] tracking-widest uppercase text-slate-400">Directory</div>
       <h1 className="text-2xl font-bold text-slate-900 mt-1">People</h1>
 
-      <div className="mt-6 flex gap-2">
+      <div className="mt-6 flex flex-wrap gap-2">
         <TabBtn active={tab === 'guests'} onClick={() => setTab('guests')}>
           Guests ({guests.length})
         </TabBtn>
@@ -59,24 +59,24 @@ export default function PeoplePage() {
         <>
           <div className="mt-4">
             <input
-              className="input max-w-sm"
+              className="input w-full sm:max-w-sm"
               placeholder="Search by name or phone"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
           <div className="card mt-3 overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm min-w-[760px]">
               <thead>
                 <tr className="text-left text-slate-400 text-[11px] uppercase tracking-wider border-b border-slate-200">
-                  <th className="pb-2">Joined</th>
+                  <th className="pb-2 whitespace-nowrap">Joined</th>
                   <th className="pb-2">Name</th>
-                  <th className="pb-2">Phone</th>
+                  <th className="pb-2 whitespace-nowrap">Phone</th>
                   <th className="pb-2">Email</th>
-                  <th className="pb-2 text-right">Pax</th>
-                  <th className="pb-2 text-right">Wallets</th>
-                  <th className="pb-2 text-right">Cover</th>
-                  <th className="pb-2 text-right">Redeemed</th>
+                  <th className="pb-2 text-right whitespace-nowrap">Pax</th>
+                  <th className="pb-2 text-right whitespace-nowrap">Wallets</th>
+                  <th className="pb-2 text-right whitespace-nowrap">Cover</th>
+                  <th className="pb-2 text-right whitespace-nowrap">Redeemed</th>
                 </tr>
               </thead>
               <tbody>
@@ -85,14 +85,14 @@ export default function PeoplePage() {
                 )}
                 {filtered.map((g) => (
                   <tr key={g.id} className="border-b border-slate-200 last:border-0">
-                    <td className="py-2.5 text-slate-400">{relativeTime(g.created_at)}</td>
+                    <td className="py-2.5 text-slate-400 whitespace-nowrap">{relativeTime(g.created_at)}</td>
                     <td className="py-2.5 text-slate-900">{g.name}</td>
-                    <td className="py-2.5 text-slate-700">{g.phone}</td>
+                    <td className="py-2.5 text-slate-700 whitespace-nowrap">{g.phone}</td>
                     <td className="py-2.5 text-slate-400">{g.email || '—'}</td>
-                    <td className="py-2.5 text-right text-slate-700">{g.pax}</td>
-                    <td className="py-2.5 text-right text-slate-700">{g.wallet_count}</td>
-                    <td className="py-2.5 text-right text-slate-700">{formatMoney(g.total_cover)}</td>
-                    <td className="py-2.5 text-right text-emerald-700">{formatMoney(g.total_redeemed)}</td>
+                    <td className="py-2.5 text-right text-slate-700 whitespace-nowrap">{g.pax}</td>
+                    <td className="py-2.5 text-right text-slate-700 whitespace-nowrap">{g.wallet_count}</td>
+                    <td className="py-2.5 text-right text-slate-700 whitespace-nowrap">{formatMoney(g.total_cover)}</td>
+                    <td className="py-2.5 text-right text-emerald-700 whitespace-nowrap">{formatMoney(g.total_redeemed)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -106,17 +106,17 @@ export default function PeoplePage() {
           <div className="card">
             <div className="font-semibold text-slate-900">Bouncers / Entry</div>
             <div className="text-xs text-slate-500">Logged from each wallet's "issued by" field.</div>
-            <div className="mt-3">
+            <div className="mt-3 overflow-x-auto">
               {bouncers.length === 0 ? (
                 <div className="text-slate-500 text-sm">No bouncer activity yet.</div>
               ) : (
-                <table className="w-full text-sm">
+                <table className="w-full text-sm min-w-[320px]">
                   <tbody>
                     {bouncers.map((b) => (
                       <tr key={b.name} className="border-b border-slate-200 last:border-0">
                         <td className="py-2 text-slate-900">{b.name}</td>
-                        <td className="py-2 text-right text-slate-700">{b.count} wallets</td>
-                        <td className="py-2 text-right text-emerald-700">{formatMoney(b.total)}</td>
+                        <td className="py-2 text-right text-slate-700 whitespace-nowrap">{b.count} wallets</td>
+                        <td className="py-2 text-right text-emerald-700 whitespace-nowrap">{formatMoney(b.total)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -128,17 +128,17 @@ export default function PeoplePage() {
           <div className="card">
             <div className="font-semibold text-slate-900">Captains</div>
             <div className="text-xs text-slate-500">Logged from each redemption's captain field.</div>
-            <div className="mt-3">
+            <div className="mt-3 overflow-x-auto">
               {captains.length === 0 ? (
                 <div className="text-slate-500 text-sm">No redemption activity yet.</div>
               ) : (
-                <table className="w-full text-sm">
+                <table className="w-full text-sm min-w-[320px]">
                   <tbody>
                     {captains.map((c) => (
                       <tr key={c.name} className="border-b border-slate-200 last:border-0">
                         <td className="py-2 text-slate-900">{c.name}</td>
-                        <td className="py-2 text-right text-slate-700">{c.count} redemptions</td>
-                        <td className="py-2 text-right text-emerald-700">{formatMoney(c.total)}</td>
+                        <td className="py-2 text-right text-slate-700 whitespace-nowrap">{c.count} redemptions</td>
+                        <td className="py-2 text-right text-emerald-700 whitespace-nowrap">{formatMoney(c.total)}</td>
                       </tr>
                     ))}
                   </tbody>

@@ -28,6 +28,9 @@ const EDITABLE_KEYS = new Set([
   'OTP_PROVIDER',           // 'console' (dev) | 'whatsapp' (production via Interakt) | 'email'
   'WHATSAPP_OTP_TEMPLATE',  // approved template slug, defaults to 'akan_login_otp'
   'WHATSAPP_OTP_LANGUAGE',  // language code, defaults to 'en'
+  // Reservego webhook (host-only sub-page)
+  'RESERVEGO_WEBHOOK_SECRET',
+  'RESERVEGO_AUTO_CREATE_EVENTS',
   // Legacy / fallback — kept writable so per-event config can still seed the
   // global default, but no longer surfaced on the Settings page.
   'EVENT_NAME',
@@ -45,6 +48,7 @@ const EDITABLE_KEYS = new Set([
  */
 const SENSITIVE_KEYS = new Set([
   'INTERAKT_API_SECRET',
+  'RESERVEGO_WEBHOOK_SECRET',
 ]);
 
 const MASKED = '••••••••';

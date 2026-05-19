@@ -223,9 +223,9 @@ export default function HistoryPage() {
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 md:py-8">
       <div className="text-[11px] tracking-widest uppercase text-slate-400">Ledger</div>
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <h1 className="text-2xl font-bold text-slate-900 mt-1">Transaction History</h1>
-        <button type="button" onClick={exportCsv} className="btn btn-secondary">
+        <button type="button" onClick={exportCsv} className="btn btn-secondary whitespace-nowrap">
           Export CSV
         </button>
       </div>
@@ -236,7 +236,7 @@ export default function HistoryPage() {
 
       {/* KPI strip */}
       {totals && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 mt-4">
           <Kpi label="Entries"           value={fmtINR(totals.entries_amount)}      sub={`${totals.entries_count} txn`} />
           <Kpi label="Redemptions"       value={fmtINR(totals.redemptions_amount)}  sub={`${totals.redemptions_count} txn`} />
           <Kpi label="Settled"           value={fmtINR(totals.settled_amount)} />
@@ -261,7 +261,7 @@ export default function HistoryPage() {
 
       {/* Filters */}
       <div className="card mt-4">
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <div>
             <label className="label">From</label>
             <input type="date" className="input" value={fromDate} max={toDate} onChange={(e) => setFromDate(e.target.value)} />
@@ -317,7 +317,7 @@ export default function HistoryPage() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm min-w-[900px]">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr className="text-left text-[11px] uppercase tracking-widest text-slate-500">
                   <th className="px-4 py-3">Invoice No</th>
@@ -398,8 +398,8 @@ export default function HistoryPage() {
           return (
             <li key={r.id} className={`card ${critical ? 'border-rose-200 bg-rose-50/30' : ''}`}>
               <div className="flex items-baseline justify-between gap-2">
-                <span className="font-mono text-xs text-slate-800">{r.invoice_no}</span>
-                <span className="text-lg font-bold text-slate-900">{fmtINR(r.amount)}</span>
+                <span className="font-mono text-xs text-slate-800 truncate">{r.invoice_no}</span>
+                <span className="text-lg font-bold text-slate-900 whitespace-nowrap">{fmtINR(r.amount)}</span>
               </div>
               <div className="mt-1 text-sm font-semibold text-slate-900">{r.customer_name}</div>
               <div className="text-xs text-slate-500 font-mono">{r.customer_phone}</div>
@@ -412,8 +412,8 @@ export default function HistoryPage() {
                 </span>
                 <span className="text-slate-400 normal-case">· by {r.redeemed_by}</span>
               </div>
-              <div className="mt-2 flex items-center justify-between gap-2">
-                <span className="text-[11px] text-slate-400">{fmtDateTime(r.created_at)}</span>
+              <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-[11px] text-slate-400 whitespace-nowrap">{fmtDateTime(r.created_at)}</span>
                 <ActionButtons
                   row={r}
                   busy={busyId === r.wallet_txn_id || busyId === r.id.replace(/^redeem:/, '')}
@@ -464,7 +464,7 @@ function ActionButtons({
   onPivot: () => void;
 }) {
   return (
-    <div className="inline-flex items-center gap-1">
+    <div className="inline-flex items-center gap-1 flex-wrap justify-end">
       <button
         type="button"
         onClick={onPivot}

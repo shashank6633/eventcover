@@ -274,6 +274,16 @@ function initSchema(db: Database.Database) {
     ['OTP_MAX_ATTEMPTS', '5'],
     ['OTP_REQUEST_COOLDOWN_SECONDS', '60'],
     ['OTP_LENGTH', '6'],
+    // Reservego webhook integration — Bearer-token shared secret. Auto-generated
+    // on first boot; host can regenerate it from /admin/settings/reservego.
+    ['RESERVEGO_WEBHOOK_SECRET', nanoid(40)],
+    ['RESERVEGO_WEBHOOK_LAST_AT', '0'],
+    ['RESERVEGO_WEBHOOK_LAST_ACTION', ''],
+    ['RESERVEGO_WEBHOOK_LAST_STATUS', ''],
+    // When 'true' (default), a webhook for a date with no matching event
+    // auto-creates a draft event and attaches the reservation. When 'false',
+    // missing event → 404 and Reservego's delivery is rejected.
+    ['RESERVEGO_AUTO_CREATE_EVENTS', 'true'],
   ];
   const up = db.prepare('INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)');
   for (const [k, v] of seed) up.run(k, v);
@@ -370,6 +380,201 @@ function migrate(db: Database.Database) {
   addEvCol('occupancy_rule',       "TEXT DEFAULT 'exact'");
   addEvCol('gst_percent',          'REAL DEFAULT 0');
   addEvCol('discount_percent',     'REAL DEFAULT 0');
+
+  // ─── Affiliate tracking ──────────────────────────────────────────────
+  // Each affiliate is an external promoter with a unique ref code. Clicks
+  // are logged when their link is opened (via RefCapture in the layout);
+  // commissions accrue when a ticket is created against their code;
+  // payouts bundle paid commissions for an affiliate at a point in time.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS affiliates (
+      id                TEXT PRIMARY KEY,
+      code              TEXT UNIQUE NOT NULL,
+      name              TEXT NOT NULL,
+      phone             TEXT,
+      email             TEXT,
+      status            TEXT NOT NULL DEFAULT 'active',
+      commission_type   TEXT NOT NULL DEFAULT 'percent',
+      commission_value  REAL NOT NULL DEFAULT 10,
+      notes             TEXT,
+      created_at        INTEGER NOT NULL,
+      created_by        TEXT,
+      updated_at        INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_affiliates_status ON affiliates(status);
+    CREATE INDEX IF NOT EXISTS idx_affiliates_code   ON affiliates(code);
+
+    CREATE TABLE IF NOT EXISTS affiliate_clicks (
+      id           TEXT PRIMARY KEY,
+      affiliate_id TEXT NOT NULL REFERENCES affiliates(id) ON DELETE CASCADE,
+      event_id     TEXT,
+      ip           TEXT,
+      user_agent   TEXT,
+      referer      TEXT,
+      created_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_clicks_affiliate ON affiliate_clicks(affiliate_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS affiliate_payouts (
+      id           TEXT PRIMARY KEY,
+      affiliate_id TEXT NOT NULL REFERENCES affiliates(id),
+      amount       REAL NOT NULL,
+      method       TEXT NOT NULL DEFAULT 'cash',
+      reference    TEXT,
+      notes        TEXT,
+      paid_by      TEXT,
+      paid_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_payouts_affiliate ON affiliate_payouts(affiliate_id, paid_at DESC);
+
+    CREATE TABLE IF NOT EXISTS affiliate_commissions (
+      id                TEXT PRIMARY KEY,
+      ticket_id         TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      affiliate_id      TEXT NOT NULL REFERENCES affiliates(id),
+      event_id          TEXT,
+      sale_amount       REAL NOT NULL,
+      commission_type   TEXT NOT NULL,
+      commission_value  REAL NOT NULL,
+      commission_amount REAL NOT NULL,
+      status            TEXT NOT NULL DEFAULT 'pending',
+      payout_id         TEXT REFERENCES affiliate_payouts(id),
+      created_at        INTEGER NOT NULL,
+      paid_at           INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_commissions_affiliate ON affiliate_commissions(affiliate_id, status);
+    CREATE INDEX IF NOT EXISTS idx_commissions_ticket    ON affiliate_commissions(ticket_id);
+    CREATE INDEX IF NOT EXISTS idx_commissions_payout    ON affiliate_commissions(payout_id);
+
+    /**
+     * Many-to-many: which events is this affiliate authorized to earn on?
+     * Strict attribution — a ticket only earns commission when an assignment
+     * row exists for (affiliate_id, ticket.event_id).
+     *
+     * commission_type / commission_value are nullable — when blank, fall
+     * back to the affiliate's default values.
+     */
+    CREATE TABLE IF NOT EXISTS affiliate_event_assignments (
+      id                TEXT PRIMARY KEY,
+      affiliate_id      TEXT NOT NULL REFERENCES affiliates(id) ON DELETE CASCADE,
+      event_id          TEXT NOT NULL REFERENCES events(id)     ON DELETE CASCADE,
+      commission_type   TEXT,
+      commission_value  REAL,
+      created_at        INTEGER NOT NULL,
+      UNIQUE(affiliate_id, event_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_assignments_event     ON affiliate_event_assignments(event_id);
+    CREATE INDEX IF NOT EXISTS idx_assignments_affiliate ON affiliate_event_assignments(affiliate_id);
+  `);
+
+  // Attribution fields stamped onto the ticket itself for fast joins + history
+  const ticketCols = db.prepare('PRAGMA table_info(tickets)').all() as { name: string }[];
+  const addTicketCol = (name: string, ddl: string) => {
+    if (!ticketCols.some((c) => c.name === name)) db.exec(`ALTER TABLE tickets ADD COLUMN ${name} ${ddl}`);
+  };
+  addTicketCol('affiliate_code',    'TEXT');
+  addTicketCol('affiliate_id',      'TEXT');
+  addTicketCol('commission_amount', 'REAL');
+  addTicketCol('commission_status', 'TEXT');
+
+  // ─── Reservations: first-class data (event_id nullable + event_date col) ──
+  // Originally reservations.event_id was NOT NULL, forcing every booking to
+  // be tied to an existing event. That doesn't match how Reservego works:
+  // bookings come in for any future date, and we may not have created the
+  // event yet (or it may never become a ticketed event at all). New model:
+  //   • event_id is NULLABLE — reservations can exist without an event
+  //   • event_date is the source of truth for which day the booking is for
+  //   • when an event is later created for that date, auto-link unassigned
+  //     reservations to it (handled in lib/events.ts createEvent)
+  const resCols = db.prepare('PRAGMA table_info(reservations)').all() as { name: string; notnull: number }[];
+  const eventIdCol = resCols.find((c) => c.name === 'event_id');
+  const needsRecreate = eventIdCol && eventIdCol.notnull === 1;
+  const hasEventDate = resCols.some((c) => c.name === 'event_date');
+
+  if (needsRecreate) {
+    // SQLite doesn't support modifying constraints in place — recreate.
+    // This is the canonical SQLite migration pattern (CREATE → COPY →
+    // DROP → RENAME), wrapped in a transaction so it's atomic.
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      BEGIN TRANSACTION;
+      CREATE TABLE IF NOT EXISTS reservations_new (
+        id                   TEXT PRIMARY KEY,
+        event_id             TEXT REFERENCES events(id),  -- now nullable
+        event_date           TEXT,                         -- new column
+        provider             TEXT NOT NULL,
+        external_ref         TEXT,
+        name                 TEXT NOT NULL,
+        phone                TEXT NOT NULL,
+        email                TEXT,
+        pax                  INTEGER DEFAULT 1,
+        arrival_time         TEXT,
+        notes                TEXT,
+        status               TEXT DEFAULT 'pending',
+        converted_wallet_txn TEXT,
+        synced_at            INTEGER NOT NULL,
+        raw                  TEXT
+      );
+
+      INSERT INTO reservations_new (
+        id, event_id, event_date, provider, external_ref, name, phone, email,
+        pax, arrival_time, notes, status, converted_wallet_txn, synced_at, raw
+      )
+      SELECT
+        r.id, r.event_id,
+        COALESCE(e.event_date, NULL) AS event_date,
+        r.provider, r.external_ref, r.name, r.phone, r.email,
+        r.pax, r.arrival_time, r.notes, r.status, r.converted_wallet_txn,
+        r.synced_at, r.raw
+      FROM reservations r
+      LEFT JOIN events e ON e.id = r.event_id;
+
+      DROP TABLE reservations;
+      ALTER TABLE reservations_new RENAME TO reservations;
+
+      CREATE INDEX IF NOT EXISTS idx_reservations_event  ON reservations(event_id);
+      CREATE INDEX IF NOT EXISTS idx_reservations_status ON reservations(status);
+      CREATE INDEX IF NOT EXISTS idx_reservations_date   ON reservations(event_date);
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_reservations_provider_ref
+        ON reservations(provider, external_ref) WHERE external_ref IS NOT NULL;
+      COMMIT;
+    `);
+    db.pragma('foreign_keys = ON');
+  } else if (!hasEventDate) {
+    // Already nullable (newer install) but missing the event_date column.
+    db.exec(`ALTER TABLE reservations ADD COLUMN event_date TEXT`);
+    db.exec(`
+      UPDATE reservations
+      SET event_date = COALESCE(
+        event_date,
+        (SELECT event_date FROM events WHERE events.id = reservations.event_id)
+      )
+      WHERE event_date IS NULL AND event_id IS NOT NULL
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_reservations_date ON reservations(event_date)`);
+  }
+
+  // ─── Reservations: Reservego-rich fields ──────────────────────────────────
+  // The webhook payload includes structured arrays (tables, tags, custom
+  // tags, preferences) and customer-context fields (bday, anniv, total
+  // visits) plus the raw bookingTime. Originally these were either dropped
+  // or merged into a single `notes` blob. Promote them to first-class
+  // columns so the UI can render them independently and so future code can
+  // query/filter by tag without parsing free text.
+  //
+  // All additive — re-read PRAGMA after the potential table recreate above
+  // so we don't ALTER a stale column list.
+  const resColsForRich = db.prepare('PRAGMA table_info(reservations)').all() as { name: string }[];
+  const addResCol = (name: string, ddl: string) => {
+    if (!resColsForRich.some((c) => c.name === name)) db.exec(`ALTER TABLE reservations ADD COLUMN ${name} ${ddl}`);
+  };
+  addResCol('booking_time',      'TEXT');
+  addResCol('tables_json',       'TEXT');
+  addResCol('tags_json',         'TEXT');
+  addResCol('custom_tags_json',  'TEXT');
+  addResCol('preferences_json',  'TEXT');
+  addResCol('bday',              'TEXT');
+  addResCol('anniv',             'TEXT');
+  addResCol('total_visits',      'INTEGER');
 }
 
 export function getConfig(key: string, fallback = ''): string {

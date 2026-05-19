@@ -55,7 +55,7 @@ export default function TicketsStatusPage() {
         Real-time view of every ticket sold at the door — broken down by status, payment method, and bouncer.
       </p>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-6">
         <Stat label="Total issued" value={status.total} />
         <Stat label="Active"   value={status.byStatus.active   || 0} tone="emerald" />
         <Stat label="Exhausted"value={status.byStatus.exhausted || 0} />
@@ -65,11 +65,11 @@ export default function TicketsStatusPage() {
 
       <div className="card mt-6">
         <div className="font-semibold text-slate-900">By payment method</div>
-        <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           {Object.entries(status.byPayment).map(([method, v]) => (
             <div key={method} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
               <div className="text-[10px] uppercase tracking-wider text-slate-500">{method}</div>
-              <div className="text-lg font-bold text-slate-900 mt-0.5">{formatMoney(v.amount)}</div>
+              <div className="text-lg font-bold text-slate-900 mt-0.5 whitespace-nowrap">{formatMoney(v.amount)}</div>
               <div className="text-xs text-slate-500">{v.count} tickets</div>
             </div>
           ))}
@@ -81,24 +81,26 @@ export default function TicketsStatusPage() {
         {status.byBouncer.length === 0 ? (
           <div className="text-sm text-slate-500 mt-3">No tickets issued yet today.</div>
         ) : (
-          <table className="w-full text-sm mt-3">
-            <thead>
-              <tr className="text-left text-slate-500 text-[11px] uppercase tracking-wider border-b border-slate-200">
-                <th className="pb-2">Bouncer</th>
-                <th className="pb-2 text-right">Tickets</th>
-                <th className="pb-2 text-right">Collected</th>
-              </tr>
-            </thead>
-            <tbody>
-              {status.byBouncer.map((b) => (
-                <tr key={b.name} className="border-b border-slate-100 last:border-0">
-                  <td className="py-2.5 text-slate-900">{b.name}</td>
-                  <td className="py-2.5 text-right text-slate-700">{b.count}</td>
-                  <td className="py-2.5 text-right text-emerald-700 font-semibold">{formatMoney(b.amount)}</td>
+          <div className="overflow-x-auto mt-3">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-slate-500 text-[11px] uppercase tracking-wider border-b border-slate-200">
+                  <th className="pb-2">Bouncer</th>
+                  <th className="pb-2 text-right">Tickets</th>
+                  <th className="pb-2 text-right">Collected</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {status.byBouncer.map((b) => (
+                  <tr key={b.name} className="border-b border-slate-100 last:border-0">
+                    <td className="py-2.5 text-slate-900">{b.name}</td>
+                    <td className="py-2.5 text-right text-slate-700 whitespace-nowrap">{b.count}</td>
+                    <td className="py-2.5 text-right text-emerald-700 font-semibold whitespace-nowrap">{formatMoney(b.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 

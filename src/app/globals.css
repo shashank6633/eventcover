@@ -30,10 +30,10 @@ body {
     @apply bg-white border border-slate-200 rounded-2xl p-5 shadow-card;
   }
   .kpi {
-    @apply bg-white border border-slate-200 rounded-2xl p-5 shadow-card;
+    @apply bg-white border border-slate-200 rounded-2xl p-5 shadow-card min-w-0;
   }
   .kpi-label {
-    @apply text-[11px] uppercase tracking-widest text-slate-500 font-medium;
+    @apply text-[11px] uppercase tracking-wider sm:tracking-widest text-slate-500 font-medium;
   }
   .kpi-value {
     @apply text-2xl md:text-3xl font-bold text-slate-900 mt-1;
@@ -139,5 +139,25 @@ html, body { overflow-x: hidden; }
 /* Make all inputs have a comfortable touch height on mobile. */
 @media (max-width: 767px) {
   .input { min-height: 44px; font-size: 16px; }  /* 16px prevents iOS auto-zoom */
+}
+
+/* ─── PWA standalone-mode polish ───────────────────────────────────────────
+   `.standalone` is set on <html> by PWAInit when the app is launched from
+   the home screen (display-mode: standalone). Strip browser-style behaviors
+   that don't belong in a "real app" context. */
+html.standalone {
+  overscroll-behavior-y: none;   /* no pull-to-refresh chrome glitch */
+  -webkit-tap-highlight-color: transparent;
+}
+html.standalone body {
+  overscroll-behavior-y: none;
+  user-select: none;             /* feels app-like; inputs override below */
+  -webkit-touch-callout: none;
+}
+html.standalone input,
+html.standalone textarea,
+html.standalone [contenteditable="true"] {
+  user-select: text;
+  -webkit-touch-callout: default;
 }
 

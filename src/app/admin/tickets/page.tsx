@@ -263,7 +263,7 @@ export default function OfflineTicketingPage() {
             <PhoneInput
               value={phone}
               onChange={setPhone}
-              placeholder="10-digit mobile number"
+              placeholder="10-digit number"
               className="flex-1"
               required
             />
@@ -450,35 +450,35 @@ export default function OfflineTicketingPage() {
             <div className="text-xs text-slate-500">{tickets.length} total</div>
           </div>
           <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm min-w-[720px]">
               <thead>
                 <tr className="text-left text-slate-500 text-[11px] uppercase tracking-wider border-b border-slate-200">
-                  <th className="pb-2">When</th>
+                  <th className="pb-2 whitespace-nowrap">When</th>
                   <th className="pb-2">Customer</th>
-                  <th className="pb-2">Ticket</th>
-                  <th className="pb-2">Category</th>
-                  <th className="pb-2 text-right">PAX</th>
-                  <th className="pb-2 text-right">Price</th>
-                  <th className="pb-2">Status</th>
+                  <th className="pb-2 whitespace-nowrap">Ticket</th>
+                  <th className="pb-2 whitespace-nowrap">Category</th>
+                  <th className="pb-2 text-right whitespace-nowrap">PAX</th>
+                  <th className="pb-2 text-right whitespace-nowrap">Price</th>
+                  <th className="pb-2 whitespace-nowrap">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {tickets.slice(0, 20).map((t) => (
                   <tr key={t.id} className="border-b border-slate-100 last:border-0">
-                    <td className="py-2.5 text-slate-500">{relativeTime(t.created_at)}</td>
+                    <td className="py-2.5 text-slate-500 whitespace-nowrap">{relativeTime(t.created_at)}</td>
                     <td className="py-2.5 text-slate-900">
                       {t.customer_name}
-                      <div className="text-xs text-slate-500">{t.customer_phone}</div>
+                      <div className="text-xs text-slate-500 whitespace-nowrap">{t.customer_phone}</div>
                     </td>
-                    <td className="py-2.5 text-slate-700">{t.ticket_name}</td>
-                    <td className="py-2.5 text-slate-500 text-xs uppercase">
+                    <td className="py-2.5 text-slate-700 whitespace-nowrap">{t.ticket_name}</td>
+                    <td className="py-2.5 text-slate-500 text-xs uppercase whitespace-nowrap">
                       {t.category === 'guest_list' ? 'Guest list' : 'Walk-in'}
                     </td>
                     <td className="py-2.5 text-right text-slate-700">{t.pax}</td>
-                    <td className="py-2.5 text-right text-slate-700">
+                    <td className="py-2.5 text-right text-slate-700 whitespace-nowrap">
                       {t.complimentary ? <span className="text-amber-700">Comp</span> : formatMoney(t.price)}
                     </td>
-                    <td className="py-2.5">
+                    <td className="py-2.5 whitespace-nowrap">
                       <span className={`tag ${t.status === 'cancelled' ? 'tag-revoked' : 'tag-active'}`}>
                         {t.status}
                       </span>
@@ -496,9 +496,9 @@ export default function OfflineTicketingPage() {
 
 function FormRow({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[160px,1fr] gap-2 md:gap-4 md:items-start">
-      <div className="text-sm font-medium text-slate-700 md:pt-2.5">{label}</div>
-      <div>{children}</div>
+    <div className="grid grid-cols-1 lg:grid-cols-[160px,1fr] gap-2 lg:gap-4 lg:items-start">
+      <div className="text-sm font-medium text-slate-700 lg:pt-2.5">{label}</div>
+      <div className="min-w-0">{children}</div>
     </div>
   );
 }

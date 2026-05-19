@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useState, useEffect, useMemo } from 'react';
 import { ROLE_LABEL, type UserRole } from '@/lib/roles';
+import { InstallButton } from '@/components/InstallButton';
 
 type NavItem = { href: string; label: string; icon: React.ReactNode; roles: UserRole[] };
 type NavSection = { section: string; items: NavItem[] };
@@ -40,6 +41,13 @@ const NAV: NavSection[] = [
       { href: '/admin/reservations',      label: 'Reservations',            icon: <IconInbox />,  roles: ROLES_MGMT },
       { href: '/admin/tables',            label: 'Tables',                  icon: <IconGrid />,   roles: ROLES_MGMT },
       { href: '/admin/people',            label: 'People',                  icon: <IconUsers />,  roles: ROLES_MGMT },
+    ],
+  },
+  {
+    section: 'Growth',
+    items: [
+      { href: '/admin/affiliates', label: 'Affiliates',       icon: <IconTrend />, roles: ROLES_MGMT },
+      { href: '/admin/payouts',    label: 'Affiliate Payouts',icon: <IconWallet />,roles: ROLES_MGMT },
     ],
   },
   {
@@ -97,8 +105,14 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen flex bg-[#F8F7F4]">
-      {/* Mobile top bar */}
-      <div className="md:hidden fixed top-0 inset-x-0 z-40 h-14 bg-white border-b border-slate-200 flex items-center px-4">
+      {/* Mobile top bar — extends under the iOS status bar in standalone mode */}
+      <div
+        className="md:hidden fixed top-0 inset-x-0 z-40 bg-white border-b border-slate-200 flex items-center px-4"
+        style={{
+          height: 'calc(3.5rem + env(safe-area-inset-top))',
+          paddingTop: 'env(safe-area-inset-top)',
+        }}
+      >
         <button aria-label="Open menu" onClick={() => setOpen(true)} className="p-2 -ml-2 rounded text-slate-700">
           <IconMenu />
         </button>
@@ -118,6 +132,10 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                     bg-[#FAFAF7] border-r border-slate-200 overflow-y-auto
                     transition-transform md:translate-x-0 flex flex-col
                     ${open ? 'translate-x-0' : '-translate-x-full'}`}
+        style={{
+          paddingTop: 'env(safe-area-inset-top)',
+          paddingBottom: 'env(safe-area-inset-bottom)',
+        }}
       >
         {/* Brand */}
         <div className="px-5 py-5 flex items-center gap-2 border-b border-slate-200">
@@ -216,8 +234,17 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <main className="flex-1 min-w-0 pt-14 md:pt-0">{children}</main>
+        <main
+          className="flex-1 min-w-0
+                     pt-[calc(3.5rem+env(safe-area-inset-top))] md:pt-0
+                     pb-[env(safe-area-inset-bottom)]"
+        >
+          {children}
+        </main>
       </div>
+
+      {/* Install-to-home-screen prompt (only shows when beforeinstallprompt fires) */}
+      <InstallButton />
     </div>
   );
 }
@@ -291,3 +318,5 @@ function IconShieldUser() { return svg(<><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-
 function IconOut()      { return svg(<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></>); }
 function IconMenu()     { return svg(<><path d="M3 6h18M3 12h18M3 18h18"/></>); }
 function IconX()        { return svg(<><path d="M18 6L6 18M6 6l12 12"/></>); }
+function IconTrend()    { return svg(<><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></>); }
+function IconWallet()   { return svg(<><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18"/><circle cx="16" cy="15" r="1.5"/></>); }

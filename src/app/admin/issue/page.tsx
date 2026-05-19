@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { formatMoney } from '@/lib/format';
 import { PhoneInput } from '@/components/PhoneInput';
+import { ReservationSearch, type ReservationSearchHit } from '@/components/ReservationSearch';
 import type { Event } from '@/lib/events';
 
 type PaymentMethod = 'cash' | 'upi' | 'card' | 'online' | 'razorpay';
@@ -167,6 +168,36 @@ function IssueClient() {
     set(Math.max(0, n + delta));
   }
 
+  /**
+   * Apply a reservation hit from the search dropdown into the form. Pre-fills
+   * customer fields, splits pax into couple+stag using the same heuristic as
+   * the ?r= URL-param flow, and switches the event dropdown if the
+   * reservation is linked to a specific event.
+   *
+   * Doesn't carry the reservation id forward (no auto-mark-as-converted)
+   * because the operator might be issuing a wallet for a non-pre-booked
+   * guest who happens to share a phone number. If they actually want the
+   * "Issue → convert reservation" flow, they go via /admin/reservations.
+   */
+  function applyReservation(r: ReservationSearchHit) {
+    setName(r.name);
+    setPhone(r.phone);
+    setEmail(r.email || '');
+
+    // Reset the existing pax breakdown before applying, so consecutive picks
+    // don't accumulate.
+    setMale(0); setFemale(0); setCouple(0);
+    const p = Math.max(1, Number(r.pax) || 1);
+    if (p % 2 === 0 && p <= 4) {
+      setCouple(p / 2);
+    } else {
+      setMale(p);
+    }
+
+    if (r.event_id) setEventId(r.event_id);
+    setError(null);
+  }
+
   const totalPax = male + female + couple * 2;
 
   // Use override values if set, else engine values.
@@ -239,7 +270,16 @@ function IssueClient() {
       )}
 
       {!result && (
-        <form onSubmit={issue} className="card mt-6 space-y-5">
+        <div className="mt-6">
+          <ReservationSearch
+            eventId={eventId}
+            onPick={(r) => applyReservation(r)}
+          />
+        </div>
+      )}
+
+      {!result && (
+        <form onSubmit={issue} className="card mt-4 space-y-5">
           {error && (
             <div className="rounded-lg border border-rose-200 bg-rose-50 text-rose-700 px-4 py-3 text-sm">
               {error}
@@ -271,13 +311,13 @@ function IssueClient() {
             <input className="input" value={name} onChange={(e) => setName(e.target.value)}
                    placeholder="e.g. Rohit Kumar" autoFocus />
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_1fr] gap-4">
             <div>
               <label className="label">Phone</label>
               <PhoneInput
                 value={phone}
                 onChange={setPhone}
-                placeholder="10-digit mobile number"
+                placeholder="10-digit number"
                 required
               />
             </div>

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { listTicketsForEvent, createTicket, type TicketCategory, type Gender } from '@/lib/tickets';
+import { listTicketsForEvent, createTicket, getTicket, type TicketCategory, type Gender } from '@/lib/tickets';
+import { attributeTicket } from '@/lib/affiliates';
 import { requireRole } from '@/lib/auth';
 
 export const runtime = 'nodejs';
@@ -41,6 +42,30 @@ export async function POST(req: NextRequest) {
       complimentary: !!body.complimentary,
       createdBy: session.name,
     });
+
+    // ─── Affiliate attribution (best-effort) ──────────────────────────────
+    // Source priority for the code:
+    //   1. Explicit `affiliateCode` in the request body — set by the future
+    //      public booking flow.
+    //   2. `ec_ref` cookie — set by RefCapture when a customer visits any
+    //      page with ?ref=CODE. Works automatically when a customer creates
+    //      the booking from their own browser.
+    // Never throws — failed attribution must not block ticket creation.
+    const explicit = typeof body.affiliateCode === 'string' ? body.affiliateCode.trim() : '';
+    const cookieRef = req.cookies.get('ec_ref')?.value || '';
+    const affCode = explicit || cookieRef;
+    if (affCode && !ticket.complimentary && ticket.price > 0) {
+      attributeTicket({
+        ticketId: ticket.id,
+        affiliateCode: affCode,
+        eventId: ticket.event_id,
+        saleAmount: ticket.price,
+        pax: ticket.pax,
+      });
+      const updated = getTicket(ticket.id);
+      return NextResponse.json({ ok: true, ticket: updated ?? ticket });
+    }
+
     return NextResponse.json({ ok: true, ticket });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to create ticket.';

@@ -1,6 +1,7 @@
 import { getDb } from './db';
 import { nanoid } from 'nanoid';
 import { logAudit } from './audit';
+import { linkUnassignedReservationsToEvent } from './reservations';
 import type { CoverRates, TableType, OccupancyRule } from './pricing';
 export type { TableType, OccupancyRule, CoverRates } from './pricing';
 
@@ -291,7 +292,18 @@ export function createEvent(input: CreateEventInput): Event {
     JSON.stringify(input.messages_config || {}),
   );
 
-  logAudit({ actor: 'admin', action: 'event_create', entityType: 'event', entityId: id, details: { name: input.name, date: input.event_date } });
+  // Auto-link any unassigned Reservego reservations sitting around for this
+  // date. If 4 reservations were waiting for a 2026-08-15 event, creating
+  // the event now attaches all 4 in one shot — no manual click-through.
+  const linked = linkUnassignedReservationsToEvent(id, input.event_date);
+
+  logAudit({
+    actor: 'admin',
+    action: 'event_create',
+    entityType: 'event',
+    entityId: id,
+    details: { name: input.name, date: input.event_date, reservations_linked: linked },
+  });
   return getEvent(id)!;
 }
 

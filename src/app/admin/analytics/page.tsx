@@ -276,7 +276,7 @@ export default function AnalyticsPage() {
       </Accordion>
 
       {/* ─── Filters + transaction table ─────────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto] gap-3 items-end mt-6">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_auto_auto] gap-3 items-end mt-6">
         <div>
           <label className="label">Search</label>
           <input
@@ -289,7 +289,7 @@ export default function AnalyticsPage() {
         </div>
         <div>
           <label className="label">Employee</label>
-          <select className="input" value={employee} onChange={(e) => setEmployee(e.target.value)}>
+          <select className="input w-full sm:w-auto" value={employee} onChange={(e) => setEmployee(e.target.value)}>
             <option value="all">Select host</option>
             {(data?.employees ?? []).map((e) => <option key={e} value={e}>{e}</option>)}
           </select>
@@ -309,26 +309,26 @@ export default function AnalyticsPage() {
           <div className="p-6 text-slate-400 text-sm">No transactions match the current filters.</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[960px] text-sm">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr className="text-left text-[11px] uppercase tracking-widest text-slate-500">
-                  <th className="px-4 py-3">Invoice No</th>
-                  <th className="px-4 py-3">Customer Name</th>
-                  <th className="px-4 py-3">Customer Ph.no</th>
-                  <th className="px-4 py-3 text-right">Amount</th>
-                  <th className="px-4 py-3">Timestamp</th>
-                  <th className="px-4 py-3">Txn</th>
-                  <th className="px-4 py-3">Payment Mode</th>
-                  <th className="px-4 py-3">Employee Name</th>
-                  <th className="px-4 py-3 text-right">Action</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Invoice No</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Customer Name</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Customer Ph.no</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">Amount</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Timestamp</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Txn</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Payment Mode</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Employee Name</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {(data?.transactions ?? []).map((r) => (
                   <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
-                    <td className="px-4 py-3 font-mono text-xs text-slate-800">{r.invoice_no}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-slate-800 whitespace-nowrap">{r.invoice_no}</td>
                     <td className="px-4 py-3 text-slate-900">{r.customer_name}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-600">{r.customer_phone}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-slate-600 whitespace-nowrap">{r.customer_phone}</td>
                     <td className="px-4 py-3 text-right font-semibold text-slate-900 whitespace-nowrap">{formatMoney(r.amount)}</td>
                     <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{fmtTimestamp(r.timestamp)}</td>
                     <td className="px-4 py-3">
@@ -420,14 +420,14 @@ function KpiGrid({ k, loading }: { k: AnalyticsKpis | undefined; loading: boolea
   if (loading) return <div className="text-slate-400 text-sm">Loading…</div>;
   return (
     <>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <KpiTile label="Amount Issued (₹)"       value={k?.amountIssued} />
         <KpiTile label="Top Ups + Preload (₹)"   value={k?.topUpsPreload} />
         <KpiTile label="Total Redeems (₹)"       value={k?.totalRedeems} />
         <KpiTile label="Left Over (₹)"           value={k?.leftOver} />
         <KpiTile label="Edited Amount (₹)"       value={k?.editedAmount} />
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-3">
         <KpiTile label="Online Amount (₹)"       value={k?.paymentBreakdown.online} />
         <KpiTile label="Cash Amount (₹)"         value={k?.paymentBreakdown.cash} />
         <KpiTile label="Card Amount (₹)"         value={k?.paymentBreakdown.card} />

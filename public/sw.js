@@ -3,19 +3,29 @@
  *
  * Strategy:
  *   • Static assets (Next.js _next/static/*) — stale-while-revalidate
- *   • Pages (HTML) — network-first, fall back to cache, then to /offline page
+ *   • Pages (HTML) — network-first, fall back to cache, then to /offline
  *   • API calls — always network (no caching of mutable wallet data)
  *
  * Goal: app remains installable + opens instantly on cold start. We deliberately
  * do NOT cache /api/* — captains must always hit the source of truth.
  */
-const STATIC_CACHE = 'ec-static-v1';
-const PAGE_CACHE = 'ec-pages-v1';
+const STATIC_CACHE = 'ec-static-v2';
+const PAGE_CACHE = 'ec-pages-v2';
 
-const OFFLINE_FALLBACK = '/login';
+const OFFLINE_URL = '/offline';
 
 self.addEventListener('install', (event) => {
-  self.skipWaiting();
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(PAGE_CACHE);
+      try {
+        await cache.add(new Request(OFFLINE_URL, { cache: 'reload' }));
+      } catch {
+        /* offline fallback couldn't be cached on first install — best-effort */
+      }
+      self.skipWaiting();
+    })(),
+  );
 });
 
 self.addEventListener('activate', (event) => {
@@ -83,8 +93,8 @@ async function networkFirst(req, cacheName) {
   } catch {
     const cached = await cache.match(req);
     if (cached) return cached;
-    const fallback = await cache.match(OFFLINE_FALLBACK);
-    if (fallback) return fallback;
+    const offline = await cache.match(OFFLINE_URL);
+    if (offline) return offline;
     return new Response('You are offline.', {
       status: 503,
       headers: { 'Content-Type': 'text/plain' },

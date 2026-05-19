@@ -97,7 +97,7 @@ export default function TableManagementPage() {
         Set up your tables, track status in real time, and link wallets to specific tables at entry.
       </p>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-6">
         <Stat label="Total" value={counts.total} />
         <Stat label="Open" value={counts.open} tone="slate" />
         <Stat label="Booked" value={counts.booked} tone="amber" />
@@ -112,18 +112,18 @@ export default function TableManagementPage() {
             {error}
           </div>
         )}
-        <form onSubmit={create} className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-3">
+        <form onSubmit={create} className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div>
             <label className="label">Label</label>
-            <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="T1, VIP-3…" />
+            <input className="input w-full" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="T1, VIP-3…" />
           </div>
           <div>
             <label className="label">Capacity</label>
-            <input className="input" type="number" min={1} value={capacity} onChange={(e) => setCapacity(e.target.value)} />
+            <input className="input w-full" type="number" min={1} value={capacity} onChange={(e) => setCapacity(e.target.value)} />
           </div>
           <div>
             <label className="label">Zone (optional)</label>
-            <input className="input" value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Upper deck, Patio…" />
+            <input className="input w-full" value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Upper deck, Patio…" />
           </div>
           <div className="flex items-end">
             <button className="btn btn-primary w-full" disabled={creating}>
@@ -164,7 +164,7 @@ export default function TableManagementPage() {
                   </div>
                 )}
 
-                <div className="mt-4 grid grid-cols-4 gap-2">
+                <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {(['open', 'booked', 'occupied', 'closed'] as TableStatus[]).map((s) => (
                     <button
                       key={s}
@@ -181,7 +181,7 @@ export default function TableManagementPage() {
                   ))}
                 </div>
 
-                <div className="mt-3 flex gap-2">
+                <div className="mt-3 flex flex-wrap gap-2">
                   {t.active_wallet_txn && (
                     <button className="text-xs text-slate-400 hover:text-slate-900" onClick={() => clearWallet(t.id)}>
                       Clear wallet

@@ -213,7 +213,7 @@ function ArtistForm({ initial, onSave, onCancel }: {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-[220px,1fr] gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[220px,1fr] gap-6 items-start">
         <ImageUpload
           value={imageData}
           onChange={setImageData}
