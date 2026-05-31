@@ -1,7 +1,14 @@
 import { notFound } from 'next/navigation';
 import { headers } from 'next/headers';
 import { MetaPixel } from '@/components/MetaPixel';
-import { PublicBookingForm, type EventSlot, type AccessMode } from '@/components/PublicBookingForm';
+import {
+  PublicBookingForm,
+  type EventSlot,
+  type AccessMode,
+  type ActivePhase,
+  type PhasePrice,
+  type NextPhasePreview,
+} from '@/components/PublicBookingForm';
 import { EventAnalyticsTracker } from '@/components/EventAnalyticsTracker';
 import { EventCTAs } from './EventCTAs';
 import type { FieldDef } from '@/lib/events';
@@ -94,6 +101,15 @@ interface PublicEventPayload {
   platformFeePct?: number;
   gstPercent?: number;
   discountPercent?: number;
+  /**
+   * Phased Ticket Releases — the currently-active phase (when one is
+   * configured + live). Null/omitted for legacy events with no phases.
+   */
+  activePhase?: ActivePhase | null;
+  /** Per-scope active phase prices (zones + table_types + flat_entry). */
+  phasePrices?: PhasePrice[] | null;
+  /** Optional preview of the next phase shown below the ticket picker. */
+  nextPhasePreview?: NextPhasePreview | null;
 }
 
 async function getEventBySlug(slug: string): Promise<PublicEventPayload | null> {
@@ -208,6 +224,21 @@ export default async function PublicEventPage({
   const platformFeePct = Number(data.platformFeePct ?? 0) || 0;
   const gstPercent = Number(data.gstPercent ?? 0) || 0;
   const discountPercent = Number(data.discountPercent ?? 0) || 0;
+  // Phased Ticket Releases — backend may not yet ship activePhase/phasePrices/
+  // nextPhasePreview for older payloads; default to null/[] so legacy events
+  // render the form with no banner and no price overrides (the form's
+  // existing flat-pricing behavior is preserved when phasePrices is empty).
+  const activePhase: ActivePhase | null =
+    data.activePhase && typeof data.activePhase.id === 'string'
+      ? data.activePhase
+      : null;
+  const phasePrices: PhasePrice[] = Array.isArray(data.phasePrices)
+    ? data.phasePrices
+    : [];
+  const nextPhasePreview: NextPhasePreview | null =
+    data.nextPhasePreview && typeof data.nextPhasePreview.name === 'string'
+      ? data.nextPhasePreview
+      : null;
   // Whitelisted media projection from backend. Sort defensively by
   // sort_order/position so we render in the curated order regardless of
   // which field the API ships with.
@@ -231,7 +262,11 @@ export default async function PublicEventPage({
 
   return (
     <>
-      <EventAnalyticsTracker eventId={event.id} />
+      <EventAnalyticsTracker
+        eventId={event.id}
+        eventSlug={event.slug}
+        activePhaseId={activePhase?.id ?? null}
+      />
       {pixelId && (
         <MetaPixel
           pixelId={pixelId}
@@ -424,6 +459,9 @@ export default async function PublicEventPage({
                 platformFeePct={platformFeePct}
                 gstPercent={gstPercent}
                 discountPercent={discountPercent}
+                activePhase={activePhase}
+                phasePrices={phasePrices}
+                nextPhasePreview={nextPhasePreview}
               />
             </>
           )}

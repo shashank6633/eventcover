@@ -45,6 +45,25 @@ declare global {
 
 interface Props {
   eventId: string;
+  /**
+   * Phased Ticket Releases — when supplied, the tracker also runs a
+   * low-frequency 60s poll against /api/events/by-slug/[slug]/public to
+   * detect when the active phase transitions (sellout OR deadline). On
+   * transition it dispatches a `phase_changed` window event so
+   * <PublicBookingForm/> can re-fetch and refresh prices in-place without
+   * forcing a full page reload.
+   *
+   * Optional + nullable so legacy callers / events without phases skip the
+   * extra network traffic entirely.
+   */
+  eventSlug?: string;
+  /**
+   * Initial active phase id from the server-rendered payload. Used as the
+   * baseline for the 60s poll's "did it change?" comparison. null when no
+   * phases are configured (the poll then short-circuits and never fires
+   * phase_changed).
+   */
+  activePhaseId?: string | null;
 }
 
 const SESSION_KEY = 'evt_session_id';
@@ -154,7 +173,11 @@ function postTrack(
   }
 }
 
-export function EventAnalyticsTracker({ eventId }: Props) {
+export function EventAnalyticsTracker({
+  eventId,
+  eventSlug,
+  activePhaseId = null,
+}: Props) {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!eventId) return;
@@ -289,6 +312,66 @@ export function EventAnalyticsTracker({ eventId }: Props) {
     window.addEventListener('scroll', onScroll, { passive: true });
     window.addEventListener('resize', onScroll, { passive: true });
 
+    // ---- Phased Ticket Releases — 60s active-phase poll ----
+    // When a slug + an initial activePhaseId are provided, we poll the
+    // public event endpoint every 60s to detect phase transitions (either
+    // the deadline elapsed or the phase sold out and the server flipped
+    // to the next one). On a change we dispatch a `phase_changed` window
+    // event so <PublicBookingForm/> can re-fetch its live prices in-place
+    // without forcing a full page reload.
+    //
+    // The poll is intentionally cheap (one GET per minute, no metadata
+    // posted) and short-circuits when eventSlug is absent OR the event
+    // has no phases configured yet (activePhaseId starts null AND the
+    // first poll response has no activePhase either).
+    let phasePollId: number | null = null;
+    let lastSeenPhaseId: string | null = activePhaseId;
+    async function pollActivePhase() {
+      if (!eventSlug) return;
+      try {
+        const res = await fetch(
+          `/api/events/by-slug/${encodeURIComponent(eventSlug)}/public`,
+          { cache: 'no-store' },
+        );
+        if (!res.ok) return;
+        const json = (await res.json().catch(() => null)) as {
+          activePhase?: { id?: string | null } | null;
+        } | null;
+        const nextId =
+          json && json.activePhase && typeof json.activePhase.id === 'string'
+            ? json.activePhase.id
+            : null;
+        if (nextId !== lastSeenPhaseId) {
+          lastSeenPhaseId = nextId;
+          try {
+            window.dispatchEvent(
+              new CustomEvent('phase_changed', {
+                detail: { activePhaseId: nextId, eventId, eventSlug },
+              }),
+            );
+          } catch {
+            // CustomEvent unavailable in some very old WebViews — fall back
+            // to a plain Event so the listener still fires (it will just
+            // see undefined detail).
+            try {
+              window.dispatchEvent(new Event('phase_changed'));
+            } catch {
+              // Give up silently — analytics must never throw.
+            }
+          }
+        }
+      } catch {
+        // Network blip — try again on the next tick.
+      }
+    }
+    if (eventSlug) {
+      try {
+        phasePollId = window.setInterval(pollActivePhase, 60_000);
+      } catch {
+        // setInterval unavailable — skip the poll, banner stays static.
+      }
+    }
+
     return () => {
       // Tear down scroll instrumentation so a SPA navigation to a different
       // event doesn't leave dangling listeners that fire against the wrong
@@ -301,6 +384,13 @@ export function EventAnalyticsTracker({ eventId }: Props) {
           window.cancelAnimationFrame(scrollRafId);
         } catch {
           // Ignore — rAF may not be available.
+        }
+      }
+      if (phasePollId != null) {
+        try {
+          window.clearInterval(phasePollId);
+        } catch {
+          // Ignore — clearInterval may not be available in exotic envs.
         }
       }
       // Leave the global helper installed across re-renders of this
@@ -316,7 +406,7 @@ export function EventAnalyticsTracker({ eventId }: Props) {
         }
       }
     };
-  }, [eventId]);
+  }, [eventId, eventSlug, activePhaseId]);
 
   return null;
 }

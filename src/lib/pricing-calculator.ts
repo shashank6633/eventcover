@@ -48,6 +48,14 @@ export interface PricingInput {
   /** When set, OVERRIDES per-person entry fee — used for seated/zone events. */
   zonePrice?: number;
   /**
+   * Optional per-unit price override coming from a phased ticket release.
+   * When supplied, REPLACES the per-person entry fee (flat path) OR the
+   * zone per-seat price (zone path). Fee / GST math is unchanged — phases
+   * only mutate the base. Set by /api/payments/order after looking up
+   * getActivePhasePrice() for the chosen scope.
+   */
+  activePhasePrice?: number;
+  /**
    * Optional INR amount to subtract from the subtotal AFTER the event-level
    * discount_percent has been applied. The /api/payments/order route uses
    * this to layer a coupon code's reduction onto the spec calculation
@@ -143,9 +151,23 @@ export function computeBilling(input: PricingInput): PricingBreakdown {
   const pax = Math.max(1, Math.floor(nnf(input.pax)));
 
   // 1. Base.
+  // Resolution order for per-unit price (zone/flat path):
+  //   activePhasePrice  →  zonePrice  →  entry_fee_per_person
+  // A phase override always wins because the host's phased release is the
+  // most recent pricing decision. Cover charges (gender-mix path) are
+  // bypassed whenever ANY per-unit override is in effect.
   let base: number;
-  if (input.zonePrice != null && Number.isFinite(input.zonePrice)) {
-    base = nnf(input.zonePrice) * pax;
+  const phaseOverride =
+    input.activePhasePrice != null && Number.isFinite(input.activePhasePrice)
+      ? nnf(input.activePhasePrice)
+      : null;
+  const zoneOverride =
+    input.zonePrice != null && Number.isFinite(input.zonePrice)
+      ? nnf(input.zonePrice)
+      : null;
+  const perUnitOverride = phaseOverride ?? zoneOverride;
+  if (perUnitOverride != null) {
+    base = perUnitOverride * pax;
   } else {
     const entry = nnf(ev.entry_fee_per_person) * pax;
     const counts: GuestCounts = {

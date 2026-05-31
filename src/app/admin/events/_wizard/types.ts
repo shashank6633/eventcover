@@ -146,6 +146,15 @@ export interface WizardState {
   // master toggle is part of WizardState.
   seating_layout_enabled: boolean;
 
+  // ─── Phased Ticket Releases (Early Bird → Phase 1/2/3) ───────────────────
+  // Opt-in for the per-event ticket-phases overlay. When ON, hosts can define
+  // phases (event_ticket_phases) and per-(phase × ticket-type-or-zone) prices
+  // (event_ticket_phase_prices) which override the static entry_fee_per_person
+  // and zone prices for whichever phase is currently active. The toggle is
+  // surfaced in both Tickets and Seating Layout sections — both flip the same
+  // field, so enabling phases anywhere unlocks the matrix everywhere.
+  seating_layout_phases_enabled: boolean;
+
   // ─── Settings — per-event fees & inquiry contact ─────────────────────────
   // inquiry_phone: E.164 number we WhatsApp when a customer submits a
   //   "Contact host" inquiry; empty = fall back to brand page phone.
@@ -197,6 +206,7 @@ export const EMPTY_STATE: WizardState = {
   rsvp_fields: [],
   ticket_design: { ...DEFAULT_TICKET_DESIGN },
   seating_layout_enabled: false,
+  seating_layout_phases_enabled: false,
   inquiry_phone: '',
   payment_gateway_fee_payer: 'host',
   platform_fee_payer: 'host',
@@ -274,6 +284,12 @@ export function hydrateFromEvent(e: Event): WizardState {
     seating_layout_enabled: !!(
       e as unknown as { seating_layout_enabled?: number | boolean | null }
     ).seating_layout_enabled,
+    // Phased ticket releases — same coercion story as seating_layout_enabled.
+    // Legacy events without the column hydrate as false; the wizard then
+    // surfaces the toggle inside both the Tickets and Seating Layout sections.
+    seating_layout_phases_enabled: !!(
+      e as unknown as { seating_layout_phases_enabled?: number | boolean | null }
+    ).seating_layout_phases_enabled,
     // Settings — fee/GST configuration + inquiry phone. All four fields are
     // additive and default to safe values so legacy event rows missing the
     // columns hydrate as "host pays everything, no GST".

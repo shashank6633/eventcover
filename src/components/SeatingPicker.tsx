@@ -1,7 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { sanitizeSvg } from '@/lib/seating-layout';
+// Imports from the isomorphic helper, NOT '@/lib/seating-layout' — that
+// module pulls in better-sqlite3 (Node-only) for its CRUD code, which can't
+// be bundled into a client component.
+import { sanitizeSvg } from '@/lib/svg-sanitize';
 
 /**
  * Public-side interactive zone picker for the per-event seating layout

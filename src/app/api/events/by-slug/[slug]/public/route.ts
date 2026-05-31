@@ -6,6 +6,7 @@ import { listPublicMedia } from '@/lib/event-media';
 import { listSlotsWithCapacity } from '@/lib/event-slots';
 import { parseRsvpFields } from '@/lib/rsvp-fields';
 import { listPublicZones } from '@/lib/seating-layout';
+import { getPhasePricesForBooking } from '@/lib/ticket-phases';
 
 function clampPercent(v: number): number {
   if (!Number.isFinite(v) || v < 0) return 0;
@@ -160,6 +161,38 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ slug: stri
   const gstPercent = clampPercent(Number(row.gst_percent) || 0);
   const discountPercent = clampPercent(Number(row.discount_percent) || 0);
 
+  // ─── Phased Ticket Releases ──────────────────────────────────────────────
+  // Public projection so the booking page can render the active phase
+  // banner ("Early Bird · ends DATE · or when sold out") + per-scope
+  // pricing overlay + a "Next: <Name> from ₹X" preview. We deliberately
+  // leak the `sold` counter — same UX policy as zones — so customers see
+  // urgency ("only 5 left"). Internal-only audit columns (started_at /
+  // ended_at) are reshaped into the trimmed `activePhase` projection below.
+  const phaseBooking = getPhasePricesForBooking(row.id);
+  const activePhase = phaseBooking.phase
+    ? {
+        id: phaseBooking.phase.id,
+        name: phaseBooking.phase.name,
+        ends_at: phaseBooking.phase.ends_at,
+        ends_on_sellout: phaseBooking.phase.ends_on_sellout,
+      }
+    : null;
+  const phasePrices = phaseBooking.prices.map((p) => ({
+    id: p.id,
+    scope: p.scope,
+    scope_id: p.scope_id,
+    price: p.price,
+    inventory: p.inventory,
+    sold: p.sold,
+  }));
+  const nextPhasePreview = phaseBooking.nextPhasePreview
+    ? {
+        name: phaseBooking.nextPhasePreview.phase.name,
+        minPrice: phaseBooking.nextPhasePreview.minPrice,
+        starts_after: phaseBooking.nextPhasePreview.phase.ends_at,
+      }
+    : null;
+
   // Strictly whitelisted projection. No prices, no internal notes, no
   // booking_types pricing leak — those go through a separate booking
   // endpoint when the customer commits.
@@ -208,5 +241,9 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ slug: stri
     platformFeePct,
     gstPercent,
     discountPercent,
+    // Phased Ticket Releases — see comment above.
+    activePhase,
+    phasePrices,
+    nextPhasePreview,
   });
 }

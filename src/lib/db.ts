@@ -1291,6 +1291,58 @@ function migrate(db: Database.Database) {
   if (!userCols.some((c) => c.name === 'last_login_at')) {
     db.exec('ALTER TABLE users ADD COLUMN last_login_at INTEGER');
   }
+
+  // ─── Phased Ticket Releases ──────────────────────────────────────────────
+  // Phases are a pricing + inventory OVERLAY on top of the existing ticket
+  // types (table_types JSON entries) and seating zones (event_zones rows).
+  // Each phase has many prices — one per scope:
+  //   • scope='table_type', scope_id = table_types[].id
+  //   • scope='zone',       scope_id = event_zones.id
+  //   • scope='flat_entry', scope_id = NULL (one row covers event-wide
+  //                          entry_fee_per_person)
+  //
+  // Active-phase resolution: ordered by sort_order, first row where
+  // active=1, (ends_at IS NULL OR ends_at>now), and (NOT ends_on_sellout
+  // OR total_sold<total_inventory). Replaces the previous "Coming Soon"
+  // stub in the wizard.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_ticket_phases (
+      id              TEXT PRIMARY KEY,
+      event_id        TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      name            TEXT NOT NULL,
+      sort_order      INTEGER NOT NULL DEFAULT 0,
+      active          INTEGER NOT NULL DEFAULT 1,
+      ends_at         INTEGER,
+      ends_on_sellout INTEGER NOT NULL DEFAULT 1,
+      started_at      INTEGER,
+      ended_at        INTEGER,
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_etp_event_order
+      ON event_ticket_phases(event_id, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_etp_active
+      ON event_ticket_phases(event_id, active);
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_ticket_phase_prices (
+      id          TEXT PRIMARY KEY,
+      phase_id    TEXT NOT NULL REFERENCES event_ticket_phases(id) ON DELETE CASCADE,
+      scope       TEXT NOT NULL CHECK(scope IN ('table_type','zone','flat_entry')),
+      scope_id    TEXT,
+      price       REAL NOT NULL,
+      inventory   INTEGER,
+      sold        INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      UNIQUE(phase_id, scope, scope_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_etpp_phase
+      ON event_ticket_phase_prices(phase_id);
+    CREATE INDEX IF NOT EXISTS idx_etpp_scope
+      ON event_ticket_phase_prices(scope, scope_id);
+  `);
 }
 
 export function getConfig(key: string, fallback = ''): string {

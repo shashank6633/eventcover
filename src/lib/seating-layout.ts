@@ -17,6 +17,20 @@ import { getDb } from './db';
 import { nanoid } from 'nanoid';
 import type { Database } from 'better-sqlite3';
 import { logAudit } from './audit';
+// Re-export the isomorphic sanitizer + types so existing server callers keep
+// importing from '@/lib/seating-layout'. The actual implementation lives in
+// svg-sanitize.ts (no Node-only deps) so SeatingPicker.tsx (client) can use
+// the same sanitize logic for defense-in-depth.
+export {
+  sanitizeSvg,
+  parseSvgZones,
+  MAX_SVG_BYTES,
+  DEFAULT_ZONE_EXCLUDE_PREFIXES,
+} from './svg-sanitize';
+export type { ZoneCandidate, SanitizeResult } from './svg-sanitize';
+// Plus a local import so functions in THIS file (e.g. bulkUpsertFromSvg) can
+// reference the type — `export type ... from` doesn't create a local binding.
+import type { ZoneCandidate } from './svg-sanitize';
 
 // ─── Public types ─────────────────────────────────────────────────────────
 
@@ -52,213 +66,16 @@ export interface PublicEventZone {
   active: boolean;
 }
 
-export interface ZoneCandidate {
-  /** id attribute from the SVG layer. */
-  id: string;
-  /** Human-readable label — defaults to the id; admin can rename. */
-  label: string;
-  /** Originating tag kind so admin UI can show a small badge. */
-  kind: 'g' | 'path' | 'rect' | 'polygon' | 'circle' | 'ellipse';
-  /** Optional accent color extracted from fill="#xxx" if present. */
-  color?: string;
-}
-
-export type SanitizeResult =
-  | { ok: true; svg: string; zones: ZoneCandidate[] }
-  | { ok: false; reason: string };
-
-// ─── Constants ────────────────────────────────────────────────────────────
-
-/** Hard size cap — 256 KB is generous (typical Figma layout is 15–40 KB). */
-export const MAX_SVG_BYTES = 256 * 1024;
-
-/**
- * Exported prefix list so the admin UI can mirror it in the "How to create
- * your SVG" explainer. The parser skips zone candidates whose id starts
- * with any of these — Figma's auto-generated layer names + common
- * non-zone artwork.
- */
-export const DEFAULT_ZONE_EXCLUDE_PREFIXES = [
-  '.',
-  '_',
-  'bg',
-  'background',
-  'guide',
-  'clip',
-  'mask',
-];
-
-function hasExcludedPrefix(id: string): boolean {
-  const lower = id.toLowerCase();
-  for (const p of DEFAULT_ZONE_EXCLUDE_PREFIXES) {
-    if (lower.startsWith(p)) return true;
-  }
-  // Figma default "layer1", "layer42", etc.
-  if (/^layer\d+$/i.test(id)) return true;
-  return false;
-}
-
 // ─── Sanitizer ────────────────────────────────────────────────────────────
-
-/**
- * Strip every known XSS vector and extract a clean SVG + the zone
- * candidates inside it. Sanitization is the safe-by-default path — return
- * { ok: false } rather than throwing so the API layer can hand the reason
- * back to the customer.
- */
-export function sanitizeSvg(raw: unknown): SanitizeResult {
-  if (typeof raw !== 'string') {
-    return { ok: false, reason: 'SVG must be a string.' };
-  }
-  if (raw.length === 0) {
-    return { ok: false, reason: 'SVG is empty.' };
-  }
-  if (raw.length > MAX_SVG_BYTES) {
-    return { ok: false, reason: `SVG exceeds the ${Math.round(MAX_SVG_BYTES / 1024)} KB limit.` };
-  }
-
-  let svg = raw;
-
-  // 1. Strip XML processing instructions (<?xml ... ?>) and DOCTYPE — XXE
-  //    defence even though SQLite isn't an XML parser. Future-proofing for
-  //    any code that might route this through one.
-  svg = svg.replace(/<\?[\s\S]*?\?>/g, '');
-  svg = svg.replace(/<!DOCTYPE[\s\S]*?>/gi, '');
-  // 2. CDATA sections — drop content but keep markup well-formed.
-  svg = svg.replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
-  // 3. HTML/XML comments — could hide payloads on older parsers.
-  svg = svg.replace(/<!--[\s\S]*?-->/g, '');
-
-  // 4. Extract the outermost <svg ...>...</svg>. Anything outside is dropped.
-  const svgMatch = svg.match(/<svg\b[\s\S]*?<\/svg\s*>/i);
-  if (!svgMatch) {
-    return { ok: false, reason: 'No <svg> root element found.' };
-  }
-  svg = svgMatch[0];
-
-  // 5. Remove <script>, <foreignObject>, <style> blocks entirely. <style>
-  //    can host @import url(...) and url(javascript:...) tricks; foreignObject
-  //    can host arbitrary HTML inside an SVG.
-  svg = svg.replace(/<script\b[\s\S]*?<\/script\s*>/gi, '');
-  svg = svg.replace(/<script\b[^>]*\/>/gi, '');
-  svg = svg.replace(/<foreignObject\b[\s\S]*?<\/foreignObject\s*>/gi, '');
-  svg = svg.replace(/<foreignObject\b[^>]*\/>/gi, '');
-  svg = svg.replace(/<style\b[\s\S]*?<\/style\s*>/gi, '');
-  svg = svg.replace(/<style\b[^>]*\/>/gi, '');
-
-  // 6. Strip every event handler attribute (onclick, onload, onmouseover…)
-  //    and href/src/xlink:href values that point anywhere other than a
-  //    fragment identifier (#foo). Kills external URLs and javascript:
-  //    schemes uniformly.
-  svg = svg.replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
-  svg = svg.replace(
-    /\s+(href|xlink:href|src)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/gi,
-    (full, _attr, _q, dq, sq, bare) => {
-      const value = (dq ?? sq ?? bare ?? '').trim();
-      if (value.startsWith('#')) return full;
-      return '';
-    },
-  );
-
-  // 7. Strip style="..." declarations entirely — same reasoning as <style>
-  //    blocks. We keep presentation attrs (fill, stroke) and let the
-  //    rendered SVG inherit page CSS for everything else.
-  svg = svg.replace(/\s+style\s*=\s*("[^"]*"|'[^']*')/gi, '');
-
-  // 8. Final guard — if the post-sanitize length somehow exceeded the cap
-  //    (the regex passes shouldn't expand, but defensive), reject.
-  if (svg.length > MAX_SVG_BYTES) {
-    return { ok: false, reason: 'Sanitized SVG exceeds the size limit.' };
-  }
-
-  return { ok: true, svg, zones: parseSvgZones(svg) };
-}
-
-/**
- * Walk the sanitized SVG body and extract zone candidates. We accept either:
- *   - Top-level <g id="X">...</g>  (Figma's standard layer export)
- *   - Standalone <path|rect|polygon|circle|ellipse id="X" .../>
- *
- * Shapes nested INSIDE a named <g> are ignored — the group is the zone.
- */
-export function parseSvgZones(svg: string): ZoneCandidate[] {
-  if (typeof svg !== 'string' || !svg) return [];
-
-  // Extract everything inside the outermost <svg>...</svg>.
-  const inner = svg
-    .replace(/^[\s\S]*?<svg\b[^>]*>/i, '')
-    .replace(/<\/svg\s*>[\s\S]*$/i, '');
-
-  const seen = new Set<string>();
-  const out: ZoneCandidate[] = [];
-
-  // Track depth so we only consider shapes at depth 1 (immediate children
-  // of <svg>). When inside a named <g>, we still take the group as the
-  // zone and skip its children.
-  let depth = 0;
-  let i = 0;
-  const len = inner.length;
-
-  while (i < len) {
-    const lt = inner.indexOf('<', i);
-    if (lt < 0) break;
-
-    // Closing tag </tag>
-    if (inner[lt + 1] === '/') {
-      const gt = inner.indexOf('>', lt);
-      if (gt < 0) break;
-      const closeTag = inner.slice(lt + 2, gt).trim().toLowerCase();
-      if (closeTag === 'g') depth = Math.max(0, depth - 1);
-      i = gt + 1;
-      continue;
-    }
-
-    // Opening or self-closing tag
-    const gt = inner.indexOf('>', lt);
-    if (gt < 0) break;
-    const tagBody = inner.slice(lt + 1, gt);
-    const selfClosing = tagBody.endsWith('/');
-    const cleanBody = selfClosing ? tagBody.slice(0, -1) : tagBody;
-    const spaceIdx = cleanBody.search(/\s|$/);
-    const tagName = cleanBody.slice(0, spaceIdx).toLowerCase();
-    const attrs = cleanBody.slice(spaceIdx);
-
-    const isShape = ['g', 'path', 'rect', 'polygon', 'circle', 'ellipse'].includes(tagName);
-    if (isShape && depth === 0) {
-      const idMatch = attrs.match(/\bid\s*=\s*("([^"]*)"|'([^']*)')/);
-      const rawId = (idMatch && (idMatch[2] ?? idMatch[3])) || '';
-      const id = rawId.trim();
-      if (id && !hasExcludedPrefix(id) && !seen.has(id)) {
-        const fillMatch = attrs.match(/\bfill\s*=\s*("([^"]*)"|'([^']*)')/);
-        const color = fillMatch ? ((fillMatch[2] ?? fillMatch[3]) || '').trim() : '';
-        out.push({
-          id,
-          label: humanizeLabel(id),
-          kind: tagName as ZoneCandidate['kind'],
-          color: color && color !== 'none' ? color : undefined,
-        });
-        seen.add(id);
-      }
-    }
-
-    if (tagName === 'g' && !selfClosing) depth += 1;
-
-    i = gt + 1;
-  }
-
-  return out;
-}
-
-/** "VIP_TOP_RIGHT" → "VIP Top Right" — a friendlier default label. */
-function humanizeLabel(id: string): string {
-  return id
-    .replace(/[-_]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .split(' ')
-    .map((w) => (w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
-    .join(' ');
-}
+//
+// The sanitizer + parseSvgZones + constants + ZoneCandidate / SanitizeResult
+// types now live in ./svg-sanitize.ts (pure string ops, no Node-only deps) so
+// the client-side SeatingPicker can import them too. The `export ... from`
+// statements above re-expose the same surface here for back-compat — every
+// existing import of `@/lib/seating-layout` keeps working unchanged.
+//
+// Everything from here down is the server-only DB layer (zone CRUD, reserve /
+// release seat counts, bulk upsert from sanitized SVG, etc.).
 
 // ─── Zone CRUD ────────────────────────────────────────────────────────────
 

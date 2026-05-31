@@ -1,7 +1,7 @@
 'use client';
 
 import { StepBookings } from './StepBookings';
-import { SectionSeatingLayout } from './SectionSeatingLayout';
+import { SectionSeatingLayout, PhasesSubCard } from './SectionSeatingLayout';
 import type { WizardState } from './types';
 
 interface Props {
@@ -37,6 +37,16 @@ export function SectionTickets({ state, onChange, eventId }: Props) {
         </p>
       </header>
       <StepBookings state={state} onChange={onChange} />
+      {/* Ticket Release Phases — same card the Seating Layout section also
+          renders. Both surfaces share `state.seating_layout_phases_enabled`
+          so flipping the toggle in either spot unlocks the matrix everywhere. */}
+      <div className="card space-y-4">
+        <PhasesSubCard
+          state={state}
+          onChange={onChange}
+          eventId={eventId ?? null}
+        />
+      </div>
       <SectionSeatingLayout
         state={state}
         onChange={onChange}

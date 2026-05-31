@@ -1,7 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WizardState } from './types';
+import { PhasesManager, type Phase } from './_phases/PhasesManager';
+import { PricingMatrix, type ScopeRow } from './_phases/PricingMatrix';
 
 /**
  * Seating Layout card — opt-in per-event SVG zone pricing.
@@ -22,12 +24,16 @@ interface Props {
   state: WizardState;
   onChange: (patch: Partial<WizardState>) => void;
   /**
-   * Persisted event id. The seating-svg + zones endpoints are keyed on this;
-   * before the event is first saved, the upload UI is disabled with a prompt
-   * to "Save the event first".
+   * Persisted event id. The seating-svg + zones + ticket-phases endpoints are
+   * keyed on this; before the event is first saved, the upload UI is disabled
+   * with a prompt to "Save the event first".
    */
   eventId: string | null;
 }
+
+// Both SectionSeatingLayout and SectionTickets render <PhasesSubCard /> with
+// the same `seating_layout_phases_enabled` field — flipping it in either
+// section turns phases on event-wide.
 
 interface ZoneRow {
   id: string;
@@ -75,7 +81,16 @@ export function SectionSeatingLayout({ state, onChange, eventId }: Props) {
 
       {enabled && (
         <div className="space-y-4 pt-1">
-          <PhasesSubCard />
+          {/*
+            NOTE: <PhasesSubCard /> intentionally NOT rendered here even though
+            seating zones ARE one of the matrix's scopes. The card is rendered
+            once in SectionTickets (the canonical home for ticket pricing); the
+            seating section just contributes its zones to the matrix's scope
+            rows there. Rendering PhasesSubCard in both places caused two live
+            instances to fetch + re-render in response to the same parent state
+            change, producing visible flicker on every toggle/edit. Single
+            instance keeps the UI stable.
+          */}
           {eventId ? (
             <LayoutSubCard eventId={eventId} />
           ) : (
@@ -101,80 +116,157 @@ export function SectionSeatingLayout({ state, onChange, eventId }: Props) {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
- * Sub-card: "Release tickets in phases?"
+ * Sub-card: "Ticket Release Phases"
  *
- * Phase-1 stub. Just opens a "Coming soon" modal that points hosts at coupons
- * for early-bird pricing in the meantime.
+ * Wraps the toggle + (when on) the PhasesManager + PricingMatrix. Same
+ * toggle field as the Tickets section so flipping it in either place
+ * unlocks the matrix everywhere.
+ *
+ * Exported because SectionTickets renders the very same card below its
+ * pricing card.
  * ────────────────────────────────────────────────────────────────────── */
-function PhasesSubCard() {
-  const [open, setOpen] = useState(false);
+export function PhasesSubCard({
+  state,
+  onChange,
+  eventId,
+}: {
+  state: WizardState;
+  onChange: (patch: Partial<WizardState>) => void;
+  eventId: string | null;
+}) {
+  const phasesOn = state.seating_layout_phases_enabled;
+  const onToggle = (v: boolean) => onChange({ seating_layout_phases_enabled: v });
+
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+    <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-slate-900">
-            Release tickets in phases?
+          <div className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+            Ticket Release Phases
+            <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 font-semibold">
+              New
+            </span>
           </div>
           <div className="text-xs text-slate-500 mt-0.5">
-            Early-bird → Regular → Last-call pricing waves.
+            Release pricing in waves — Early Bird → Phase 1 → Phase 2. Each
+            phase ends on a date, when it sells out, or both, and auto-promotes
+            the next one.
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-brand-600 hover:text-brand-700 px-3 py-1.5 rounded-md border border-brand-200 bg-white hover:bg-brand-50/40 transition"
-        >
-          Set Up
-        </button>
+        <Toggle
+          checked={phasesOn}
+          onChange={onToggle}
+          label="Enable ticket release phases"
+        />
       </div>
-      {open && <PhaseSetupModal onClose={() => setOpen(false)} />}
+
+      {phasesOn && eventId && (
+        <PhasesAndMatrix
+          state={state}
+          eventId={eventId}
+        />
+      )}
+
+      {phasesOn && !eventId && (
+        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center">
+          <div className="text-sm font-semibold text-slate-700 mb-1">
+            Save the event first to configure phases.
+          </div>
+          <div className="text-xs text-slate-500">
+            We need an event ID before we can store phases and prices.
+          </div>
+        </div>
+      )}
+
+      {!phasesOn && (
+        <div className="text-[11px] text-slate-500 italic">
+          Off — bookings use the prices configured above.
+        </div>
+      )}
     </div>
   );
 }
 
-function PhaseSetupModal({ onClose }: { onClose: () => void }) {
+/* ──────────────────────────────────────────────────────────────────────────
+ * PhasesAndMatrix — loads zones, derives scopes, renders both UIs.
+ *
+ * Lives here (alongside SectionSeatingLayout) so the zone-fetch logic is
+ * co-located with the rest of the seating-layer code. SectionTickets reuses
+ * this same component via the PhasesSubCard export.
+ * ────────────────────────────────────────────────────────────────────── */
+function PhasesAndMatrix({
+  state,
+  eventId,
+}: {
+  state: WizardState;
+  eventId: string;
+}) {
+  const [zones, setZones] = useState<ZoneRow[]>([]);
+  const [phases, setPhases] = useState<Phase[]>([]);
+
+  // Hydrate zones once when the matrix mounts. We don't poll — the zone list
+  // only changes when the host edits LayoutSubCard (same page) so a refresh
+  // on next mount is fine in the wizard context.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/events/${eventId}/zones`)
+      .then(safeJson)
+      .then((d) => {
+        if (cancelled) return;
+        if (d && d.ok && Array.isArray(d.zones)) {
+          setZones(normalizeZones(d.zones));
+        }
+      })
+      .catch(() => {
+        // Non-fatal — matrix just shows fewer rows.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [eventId]);
+
+  const scopes = useMemo<ScopeRow[]>(() => {
+    const out: ScopeRow[] = [];
+    // 1. Flat entry — always present so the host can phase-price the global
+    //    entry_fee_per_person even without any tables or zones.
+    out.push({
+      scope: 'flat_entry',
+      scopeId: null,
+      label: 'Entry fee (per person)',
+      sublabel: `Default ₹${state.entry_fee_per_person}`,
+    });
+    // 2. Each table type from state — id from table_types JSON, label from name.
+    for (const t of state.table_types || []) {
+      out.push({
+        scope: 'table_type',
+        scopeId: t.id,
+        label: t.name,
+        sublabel: `Default ₹${t.entry_fee} · capacity ${t.capacity}`,
+      });
+    }
+    // 3. Each seating zone — only present when the host has uploaded an SVG.
+    for (const z of zones) {
+      out.push({
+        scope: 'zone',
+        scopeId: z.id,
+        label: z.zone_label || z.zone_id,
+        sublabel: `Default ₹${z.price} · capacity ${z.capacity}`,
+      });
+    }
+    return out;
+  }, [state.entry_fee_per_person, state.table_types, zones]);
+
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white rounded-xl border border-slate-200 max-w-md w-full p-6 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-2 mb-3">
-          <h3 className="text-lg font-semibold text-slate-900">
-            Phased ticket release
-          </h3>
-          <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-semibold">
-            Coming soon
-          </span>
-        </div>
-        <p className="text-sm text-slate-600">
-          Coming soon — phase-based ticket release. You&apos;ll be able to
-          schedule Early Bird → Regular → Last Call price waves with their
-          own start times.
-        </p>
-        <p className="text-sm text-slate-600 mt-2">
-          For now use a{' '}
-          <a
-            href="/admin/coupons"
-            className="text-brand-600 hover:text-brand-700 underline-offset-2 hover:underline"
-          >
-            coupon
-          </a>{' '}
-          to gate early-bird pricing.
-        </p>
-        <div className="mt-5 flex justify-end">
-          <button
-            type="button"
-            onClick={onClose}
-            className="btn btn-primary"
-          >
-            Got it
-          </button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PhasesManager
+        eventId={eventId}
+        onPhasesChange={(next) => setPhases(next)}
+      />
+      <PricingMatrix
+        eventId={eventId}
+        phases={phases}
+        scopes={scopes}
+      />
     </div>
   );
 }

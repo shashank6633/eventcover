@@ -6,6 +6,7 @@ import { getEvent } from '@/lib/events';
 import { getReservation } from '@/lib/reservations';
 import { validateCoupon } from '@/lib/coupons';
 import { computeBilling } from '@/lib/pricing-calculator';
+import { getActivePhasePrice, type PhaseScope } from '@/lib/ticket-phases';
 import {
   getRazorpayConfig,
   createRazorpayOrder,
@@ -175,6 +176,28 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // ── Phased Ticket Release override ─────────────────────────────────────
+  // When the host has configured a phase that covers the customer's
+  // selected scope (zone / table_type / flat entry), its price replaces
+  // the per-unit price we just computed. Inventory is enforced at capture
+  // time inside tryTransitionAfterCapture() — order creation only locks in
+  // the price. Deposit mode is left alone (deposit_amount is the host's
+  // intent regardless of the active phase).
+  let activePhaseInfo: { phaseId: string; phaseName: string; price: number } | null = null;
+  if (mode === 'full_cover') {
+    const scope: PhaseScope = reservation.zone_id ? 'zone' : 'flat_entry';
+    const scopeId: string | null = reservation.zone_id || null;
+    const override = getActivePhasePrice(event.id, scope, scopeId);
+    if (override) {
+      pricePerUnit = Number(override.price.price) || 0;
+      activePhaseInfo = {
+        phaseId: override.phase.id,
+        phaseName: override.phase.name,
+        price: pricePerUnit,
+      };
+    }
+  }
+
   // ── Coupon application (optional) ──
   // We validate server-side so a malicious client can't fake the discount.
   // The validator works against the BASE (price × pax) so the coupon's
@@ -205,13 +228,17 @@ export async function POST(req: NextRequest) {
 
   // ── Final amount via the pricing-calculator (spec) ──
   // Feeds the per-unit price as `zonePrice` so the calculator's flat-pricing
-  // path runs uniformly across deposit + full_cover + zone modes. The
-  // event-level discount_percent is layered IN ADDITION to the coupon
-  // reduction — see pricing-calculator.ts for the exact merge rules.
+  // path runs uniformly across deposit + full_cover + zone modes. When an
+  // active phase covers this scope, we ALSO pass activePhasePrice — the
+  // calculator's resolution order (activePhasePrice → zonePrice → entry_fee)
+  // ensures the phase wins. The event-level discount_percent is layered IN
+  // ADDITION to the coupon reduction — see pricing-calculator.ts for the
+  // exact merge rules.
   const breakdown = computeBilling({
     event,
     pax: pricedPax,
     zonePrice: pricePerUnit,
+    activePhasePrice: activePhaseInfo ? activePhaseInfo.price : undefined,
     couponDiscount,
   });
   const amountInr = breakdown.final;
@@ -256,6 +283,18 @@ export async function POST(req: NextRequest) {
   if (rawTicketType) notesPayload.ticketType = rawTicketType;
   if (rawZoneName) notesPayload.zoneName = rawZoneName;
   notesPayload.fee_breakdown = breakdown;
+  // Phased Ticket Releases — stash the active phase id + scope so
+  // /api/payments/verify can bump the right sold counter on capture, and
+  // so reconciliation can audit "this booking locked in the Early Bird
+  // price" even after the phase has ended.
+  if (activePhaseInfo) {
+    notesPayload.active_phase_id = activePhaseInfo.phaseId;
+    notesPayload.active_phase_name = activePhaseInfo.phaseName;
+    notesPayload.active_phase_price = activePhaseInfo.price;
+    notesPayload.active_phase_scope = reservation.zone_id ? 'zone' : 'flat_entry';
+    notesPayload.active_phase_scope_id = reservation.zone_id || null;
+    notesPayload.active_phase_count = pricedPax;
+  }
   const notesJson = JSON.stringify(notesPayload);
 
   db.prepare(`

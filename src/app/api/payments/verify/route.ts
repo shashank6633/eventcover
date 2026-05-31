@@ -11,6 +11,7 @@ import { reserveZoneSeats } from '@/lib/seating-layout';
 import { trackEvent } from '@/lib/event-analytics';
 import { markRecovered as markCartRecovered } from '@/lib/cart-recovery';
 import { sendBookingAlertWhatsApp, sendSaleWebhook } from '@/lib/notifications';
+import { tryTransitionAfterCapture, type PhaseScope } from '@/lib/ticket-phases';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -326,6 +327,33 @@ export async function POST(req: NextRequest) {
       payment_mode: payment.payment_mode,
     },
   });
+
+  // ── Phased Ticket Releases — bump sold + auto-transition ─────────────
+  // Fire-and-forget: an exception here must NOT block the verify response.
+  // The customer's card already settled and we want to ack quickly. The
+  // active_phase_id + scope was stamped into payments.notes at /api/payments/
+  // order time, so we can replay the increment even if a later code path
+  // ever moves phase resolution. When notes is missing or malformed
+  // (legacy payments, top-ups), we skip — the absence is the signal.
+  try {
+    const notes = payment.notes ? JSON.parse(payment.notes) as Record<string, unknown> : {};
+    const phaseId = typeof notes.active_phase_id === 'string' ? notes.active_phase_id : '';
+    const phaseScope = typeof notes.active_phase_scope === 'string'
+      ? notes.active_phase_scope as PhaseScope
+      : null;
+    const phaseScopeId = typeof notes.active_phase_scope_id === 'string'
+      ? notes.active_phase_scope_id
+      : null;
+    const phaseCount = Number(notes.active_phase_count);
+    if (phaseId && phaseScope && Number.isFinite(phaseCount) && phaseCount > 0) {
+      tryTransitionAfterCapture({
+        eventId: payment.event_id,
+        scope: phaseScope,
+        scopeId: phaseScopeId,
+        count: phaseCount,
+      });
+    }
+  } catch { /* never block on phase tracking */ }
 
   // Analytics: emit checkout_success + mark any matching cart-recovery
   // attempt as recovered. Best-effort — never let an analytics issue block

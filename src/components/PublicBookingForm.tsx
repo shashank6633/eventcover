@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { PhoneInput } from './PhoneInput';
 import { fireMetaEvent } from './MetaPixel';
 import {
@@ -9,6 +9,7 @@ import {
   type RazorpayFailureError,
 } from './RazorpayCheckout';
 import { SeatingPicker, type PublicZone } from './SeatingPicker';
+import { PhaseCountdown } from './PhaseCountdown';
 import type { FieldDef } from '@/lib/events';
 
 /**
@@ -47,6 +48,51 @@ import type { FieldDef } from '@/lib/events';
  * Exported so the public event page can type its access_mode field.
  */
 export type AccessMode = 'public' | 'invite_link' | 'phone_list';
+
+/**
+ * Phased Ticket Releases — the currently-active phase metadata as exposed
+ * by /api/events/by-slug/[slug]/public. Shape is intentionally narrow: the
+ * form only needs the display name + end trigger + ids to power the banner
+ * and look up phasePrices. Optional because the feature is OFF by default
+ * for legacy events.
+ */
+export interface ActivePhase {
+  id: string;
+  name: string;
+  /** Epoch ms; null when the phase ends only on sellout. */
+  ends_at: number | null;
+  /** When true, append "or when sold out" to the banner copy. */
+  ends_on_sellout: boolean;
+}
+
+/**
+ * Phased Ticket Releases — flat lookup table of per-scope active prices.
+ * Each entry overrides the price for a specific ticket scope: a zone (by
+ * event_zones.id), a table_type (id from the table_types JSON entry), or
+ * the synthetic event-wide flat_entry scope. `remaining` is null for
+ * unlimited inventory; numbers ≤ 0 render the cell as sold out.
+ */
+export interface PhasePrice {
+  scope: 'table_type' | 'zone' | 'flat_entry';
+  /** event_zones.id for zone, table_types[i].id for table_type, null for flat_entry. */
+  scope_id: string | null;
+  /** Per-unit price in INR rupees that overrides the base entry/zone price. */
+  price: number;
+  /** null = unlimited; otherwise units left for THIS phase across this scope. */
+  remaining: number | null;
+}
+
+/**
+ * Phased Ticket Releases — a thin preview of the NEXT phase shown beneath
+ * the ticket picker so the customer feels the urgency ("Next: Phase 2
+ * prices start at ₹2,000"). Optional; we hide the hint when the server
+ * has no successor phase configured.
+ */
+export interface NextPhasePreview {
+  name: string;
+  /** Lowest price across all scopes in the next phase, in INR rupees. */
+  minPrice: number;
+}
 
 /**
  * Phase 3 multi-slot picker shape — the active slots returned from the
@@ -138,6 +184,27 @@ interface Props {
   platformFeePct?: number;
   gstPercent?: number;
   discountPercent?: number;
+  /**
+   * Phased Ticket Releases — when supplied, the form renders a banner above
+   * the ticket picker AND overrides the displayed price per zone /
+   * flat_entry with the matching entry from phasePrices. When `activePhase`
+   * is null/undefined, the form keeps its existing flat-pricing behavior
+   * unchanged (this is the legacy path for events without phases configured).
+   */
+  activePhase?: ActivePhase | null;
+  /**
+   * Per-scope active prices (zone / table_type / flat_entry). Empty array
+   * (or undefined) means "no phase overrides apply" — same as if
+   * activePhase were null. Each entry's `remaining` powers the per-cell
+   * "X left" hint and the sold-out disable.
+   */
+  phasePrices?: PhasePrice[];
+  /**
+   * Optional preview of the next phase shown beneath the ticket picker
+   * ("Next: Phase 2 prices start at ₹2,000"). Null when there is no
+   * configured successor.
+   */
+  nextPhasePreview?: NextPhasePreview | null;
 }
 
 /**
@@ -225,6 +292,28 @@ function formatSlotLabel(slot: EventSlot): string {
     : slot.start_time;
   const labelPart = slot.label ? ` · ${slot.label}` : '';
   return `${datePart} · ${timePart}${labelPart}`;
+}
+
+/**
+ * Phased Ticket Releases — render the phase end date for the banner
+ * (e.g. "ends 5 Jun"). The live "ends in 2h 14m" countdown is rendered
+ * separately by <PhaseCountdown/>; this is the static date portion.
+ *
+ * Accepts epoch ms. Falls back to an empty string when the value is null
+ * (the parent banner then omits the "ends DATE" segment entirely).
+ */
+function formatPhaseEndDate(endsAt: number | null): string {
+  if (endsAt == null || !Number.isFinite(endsAt)) return '';
+  try {
+    const d = new Date(endsAt);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+    });
+  } catch {
+    return '';
+  }
 }
 
 function formatRupees(amount: number | null | undefined): string {
@@ -330,6 +419,9 @@ export function PublicBookingForm({
   platformFeePct = 0,
   gstPercent = 0,
   discountPercent = 0,
+  activePhase = null,
+  phasePrices = [],
+  nextPhasePreview = null,
 }: Props) {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState(''); // E.164 from PhoneInput; '' when invalid
@@ -378,6 +470,94 @@ export function PublicBookingForm({
   // customer changes pax or picks a different zone.
   const zoneOverPax =
     hasSeating && selectedZone ? pax > selectedZoneRemaining : false;
+
+  // ----- Phased Ticket Releases: per-zone price + remaining overrides -----
+  // We must take care to compute these AFTER livePhase/livePhasePrices
+  // state has been declared (they are hoisted below). At render time React
+  // will read these via closure — they're constants per render and used
+  // below in (a) the optional "X left" / sold-out hint above the picker,
+  // (b) the price the CTA + breakdown derive from. The SeatingPicker still
+  // receives the original zones (it renders prices/seats on its own); the
+  // per-zone phase pricing hint is rendered as a sibling row below.
+
+  // Phased Ticket Releases — live phase state. We mirror the props into
+  // state so a 60s phase_changed dispatch from <EventAnalyticsTracker/>
+  // can replace the active phase + prices in-place without forcing a full
+  // page reload. The initial snapshot comes from the server-rendered page.
+  const [livePhase, setLivePhase] = useState<ActivePhase | null>(activePhase);
+  const [livePhasePrices, setLivePhasePrices] = useState<PhasePrice[]>(phasePrices);
+  const [liveNextPhase, setLiveNextPhase] = useState<NextPhasePreview | null>(
+    nextPhasePreview,
+  );
+  // Keep state in sync if the parent re-renders with new props (rare —
+  // the public page is mostly static — but defensive when the listener
+  // dispatches phase_changed and the parent also re-fetches).
+  useEffect(() => setLivePhase(activePhase), [activePhase]);
+  useEffect(() => setLivePhasePrices(phasePrices), [phasePrices]);
+  useEffect(() => setLiveNextPhase(nextPhasePreview), [nextPhasePreview]);
+
+  // Subscribe to the analytics tracker's `phase_changed` window event and
+  // re-fetch the public payload to pull fresh phase metadata. We only set
+  // up the listener when we have a slug AND the feature is in use (an
+  // active phase OR a next phase preview OR phasePrices present) — for
+  // legacy events with no phases configured the listener never fires and
+  // there's no point burning a wakeup on every visit.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!eventSlug) return;
+    if (!livePhase && livePhasePrices.length === 0 && !liveNextPhase) return;
+    async function refetch() {
+      try {
+        const res = await fetch(
+          `/api/events/by-slug/${encodeURIComponent(eventSlug)}/public`,
+          { cache: 'no-store' },
+        );
+        if (!res.ok) return;
+        const json = (await res.json().catch(() => null)) as {
+          activePhase?: ActivePhase | null;
+          phasePrices?: PhasePrice[] | null;
+          nextPhasePreview?: NextPhasePreview | null;
+        } | null;
+        if (!json) return;
+        setLivePhase(json.activePhase ?? null);
+        setLivePhasePrices(Array.isArray(json.phasePrices) ? json.phasePrices : []);
+        setLiveNextPhase(json.nextPhasePreview ?? null);
+      } catch {
+        // Network blip — banner will refresh on the next poll tick.
+      }
+    }
+    function onPhaseChanged() {
+      void refetch();
+    }
+    window.addEventListener('phase_changed', onPhaseChanged);
+    return () => {
+      window.removeEventListener('phase_changed', onPhaseChanged);
+    };
+    // Only re-subscribe when the slug changes — the booleans inside the
+    // guard are derived from state we already update inside the listener.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventSlug]);
+
+  // Look up a per-scope active phase price. Returns null when the feature
+  // is off OR the scope has no override (in which case the caller falls
+  // back to the original zone/entry price). Defensive against stale data
+  // shapes where scope_id might be missing.
+  function findPhasePrice(
+    scope: PhasePrice['scope'],
+    scopeId: string | null,
+  ): PhasePrice | null {
+    if (!livePhase) return null;
+    if (livePhasePrices.length === 0) return null;
+    for (const p of livePhasePrices) {
+      if (p.scope !== scope) continue;
+      if (scope === 'flat_entry') {
+        // flat_entry has no scope_id by design.
+        return p;
+      }
+      if (p.scope_id && p.scope_id === scopeId) return p;
+    }
+    return null;
+  }
 
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
 
@@ -916,14 +1096,40 @@ export function PublicBookingForm({
       platformFeePayer === 'customer' ||
       gstEnabled);
 
+  // Phased Ticket Releases — resolve the effective per-unit price for the
+  // current selection. When an active phase has an override for the picked
+  // zone (or for flat_entry on flat-pricing events), that price wins over
+  // zone.price / paymentAmount. Server re-derives this on order-create so
+  // a tampered client cannot under-pay; this is purely a display preview.
+  const selectedZonePhasePrice =
+    hasSeating && selectedZone
+      ? findPhasePrice('zone', selectedZone.id)
+      : null;
+  const flatEntryPhasePrice = !hasSeating ? findPhasePrice('flat_entry', null) : null;
+  // Per-unit "ticket" price the form should currently show. Falls back to
+  // zone.price → paymentAmount when no phase override exists for the
+  // selected scope.
+  const effectiveUnitPrice: number | null = (() => {
+    if (hasSeating && selectedZone) {
+      return selectedZonePhasePrice ? selectedZonePhasePrice.price : selectedZone.price;
+    }
+    if (flatEntryPhasePrice) return flatEntryPhasePrice.price;
+    return paymentAmount;
+  })();
+
   // Base subtotal used for the breakdown — zone price × pax overrides the
   // server-supplied paymentAmount when a zone is picked, otherwise we use
   // the display-hint paymentAmount × pax-factor (server's paymentAmount is
   // already total for full_cover at pax=1; we multiply when full_cover
-  // mode and a higher pax is selected).
+  // mode and a higher pax is selected). Phase pricing (when active)
+  // overrides both via effectiveUnitPrice above.
   const breakdownBase: number | null = (() => {
     if (hasSeating && selectedZone) {
-      return selectedZone.price * Math.max(1, pax);
+      const unit = selectedZonePhasePrice ? selectedZonePhasePrice.price : selectedZone.price;
+      return unit * Math.max(1, pax);
+    }
+    if (flatEntryPhasePrice) {
+      return flatEntryPhasePrice.price * Math.max(1, pax);
     }
     if (paymentMode === 'full_cover' && paymentAmount != null) {
       // paymentAmount from the public route is computed at pax=1, so scale
@@ -971,24 +1177,52 @@ export function PublicBookingForm({
   } else if (isPaid) {
     // Live breakdown (when fees/GST are customer-paid) wins because it
     // already folds in the coupon + the zone price + the fees + GST.
-    // Otherwise fall back to the legacy preference order: zone subtotal →
-    // coupon final → server-supplied paymentAmount.
+    // Otherwise fall back to the legacy preference order: phase-override
+    // subtotal → zone subtotal → coupon final → server-supplied
+    // paymentAmount.
+    const phaseSubtotal =
+      effectiveUnitPrice != null && (selectedZonePhasePrice || flatEntryPhasePrice)
+        ? effectiveUnitPrice * Math.max(1, pax)
+        : null;
     const zoneSubtotal =
       hasSeating && selectedZone ? selectedZone.price * Math.max(1, pax) : null;
     const effectiveAmount = liveBreakdown
       ? liveBreakdown.final
-      : zoneSubtotal != null
-        ? zoneSubtotal
-        : appliedCoupon
-          ? appliedCoupon.finalAmount
-          : paymentAmount;
+      : phaseSubtotal != null
+        ? phaseSubtotal
+        : zoneSubtotal != null
+          ? zoneSubtotal
+          : appliedCoupon
+            ? appliedCoupon.finalAmount
+            : paymentAmount;
     const rupees = formatRupees(effectiveAmount);
     ctaLabel = rupees ? `Reserve & Pay ₹${rupees}` : 'Reserve & Pay';
   } else if (hasSeating && selectedZone) {
     // Free-flow event with seating still shows the zone price for clarity.
-    const rupees = formatRupees(selectedZone.price * Math.max(1, pax));
+    // Phase override (when present) wins over the static zone price.
+    const unit = selectedZonePhasePrice ? selectedZonePhasePrice.price : selectedZone.price;
+    const rupees = formatRupees(unit * Math.max(1, pax));
     ctaLabel = rupees ? `Reserve my spot · ₹${rupees}` : 'Reserve my spot';
   }
+
+  // Phased Ticket Releases — block the CTA when the SELECTED scope's phase
+  // inventory has hit zero. The auxiliary price grid already mutes the
+  // sold-out cells, but a customer could have picked a zone BEFORE the
+  // phase polling tick updated `remaining` — defensive check below catches
+  // that race. For flat-pricing events the same logic applies via
+  // flatEntryPhasePrice. When no override exists for the selected scope,
+  // this flag stays false and the legacy behaviour is preserved.
+  const phaseSoldOut: boolean = (() => {
+    if (hasSeating && selectedZone && selectedZonePhasePrice) {
+      const r = selectedZonePhasePrice.remaining;
+      return typeof r === 'number' && r <= 0;
+    }
+    if (!hasSeating && flatEntryPhasePrice) {
+      const r = flatEntryPhasePrice.remaining;
+      return typeof r === 'number' && r <= 0;
+    }
+    return false;
+  })();
 
   return (
     <form
@@ -998,6 +1232,39 @@ export function PublicBookingForm({
       aria-label={`Reserve for ${eventName} on ${eventDate}`}
     >
       <h2 className="text-lg font-bold text-slate-900">Reserve online</h2>
+
+      {/* Phased Ticket Releases — banner above the ticket picker. Only
+          rendered when the server has supplied an active phase. Composes
+          the static "Phase Name · ends DATE" copy with a live
+          <PhaseCountdown/> sibling so the customer feels urgency without
+          us re-rendering the whole form every tick. Drops the "or when
+          sold out" segment when ends_on_sellout is false (per spec). */}
+      {livePhase && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="rounded-lg border border-brand-200 bg-brand-50 px-4 py-2.5 text-sm text-brand-900 flex flex-wrap items-center gap-x-2 gap-y-1"
+        >
+          <span className="font-semibold">{livePhase.name}</span>
+          {livePhase.ends_at != null && (
+            <>
+              <span aria-hidden className="text-brand-400">·</span>
+              <span>ends {formatPhaseEndDate(livePhase.ends_at)}</span>
+              <span aria-hidden className="text-brand-400">·</span>
+              <PhaseCountdown
+                endsAt={livePhase.ends_at}
+                endsOnSellout={livePhase.ends_on_sellout}
+              />
+            </>
+          )}
+          {livePhase.ends_on_sellout && (
+            <>
+              <span aria-hidden className="text-brand-400">·</span>
+              <span className="text-brand-800">or when sold out</span>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Seating Layout — interactive zone picker. Rendered above the rest
           of the form so the customer sees pricing before filling in their
@@ -1023,6 +1290,109 @@ export function PublicBookingForm({
           pax={pax}
           onSelect={setSelectedZoneId}
         />
+      )}
+
+      {/* Phased Ticket Releases — per-zone phase price overrides shown as a
+          compact grid below the seating picker. Each row mirrors a zone's
+          ACTIVE phase price (when an override exists) plus a "X left" hint
+          when fewer than 10 units remain in the phase. Sold-out zones are
+          muted + click-disabled. We render this AFTER the seating picker
+          rather than inside it so legacy events (no phases) render the
+          SVG-only picker unchanged, and so we don't have to touch the
+          (security-sensitive) SVG DOM-manipulation code path. */}
+      {hasSeating && livePhase && livePhasePrices.length > 0 && (
+        <div
+          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm space-y-1.5"
+          aria-label="Phase prices by zone"
+        >
+          {zones.map((z) => {
+            const phasePrice = findPhasePrice('zone', z.id);
+            if (!phasePrice) return null;
+            const remaining = phasePrice.remaining;
+            const soldOut = typeof remaining === 'number' && remaining <= 0;
+            const lowStock =
+              typeof remaining === 'number' && remaining > 0 && remaining < 10;
+            const isSelected = selectedZoneId === z.id;
+            return (
+              <button
+                key={z.id}
+                type="button"
+                onClick={() => {
+                  if (soldOut || busy) return;
+                  setSelectedZoneId(z.id);
+                }}
+                disabled={soldOut || busy}
+                aria-pressed={isSelected}
+                className={[
+                  'w-full flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left transition',
+                  soldOut
+                    ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                    : isSelected
+                      ? 'border-brand-500 bg-brand-50 text-brand-900'
+                      : 'border-slate-200 bg-white text-slate-700 hover:border-brand-300 hover:bg-brand-50/40',
+                ].join(' ')}
+              >
+                <span className="flex-1 min-w-0 truncate font-medium">
+                  {z.zone_label}
+                </span>
+                <span className="flex flex-col items-end gap-0.5 shrink-0">
+                  <span className="tabular-nums font-semibold">
+                    ₹{formatRupees(phasePrice.price)}
+                  </span>
+                  {soldOut ? (
+                    <span className="text-[11px] uppercase tracking-wide font-semibold text-slate-500">
+                      Sold out
+                    </span>
+                  ) : lowStock ? (
+                    <span className="text-[11px] text-rose-700">
+                      {remaining} left
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Phased Ticket Releases — flat-pricing override hint. Rendered only
+          on non-seating events where the active phase has a flat_entry
+          override. Mirrors the zone grid above but for the single
+          "General Admission" scope. Sold-out short-circuits the submit
+          (the CTA disables) and shows a clear notice. */}
+      {!hasSeating && flatEntryPhasePrice && (
+        <div
+          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm flex items-center justify-between gap-2"
+          aria-label="Phase price"
+        >
+          <span className="flex-1 min-w-0 truncate font-medium text-slate-700">
+            Entry · ₹{formatRupees(flatEntryPhasePrice.price)} per person
+          </span>
+          {typeof flatEntryPhasePrice.remaining === 'number' && (
+            <span className="shrink-0 text-xs">
+              {flatEntryPhasePrice.remaining <= 0 ? (
+                <span className="font-semibold uppercase tracking-wide text-slate-500">
+                  Sold out
+                </span>
+              ) : flatEntryPhasePrice.remaining < 10 ? (
+                <span className="text-rose-700">
+                  {flatEntryPhasePrice.remaining} left
+                </span>
+              ) : null}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Phased Ticket Releases — next-phase teaser shown below the ticket
+          picker. We hide this when the host has not configured a
+          successor phase (server returns nextPhasePreview = null in that
+          case). The minPrice is rounded by formatRupees(). */}
+      {liveNextPhase && (
+        <div className="text-xs text-slate-500">
+          Next: <span className="font-semibold text-slate-700">{liveNextPhase.name}</span>{' '}
+          prices start at ₹{formatRupees(liveNextPhase.minPrice)}
+        </div>
       )}
 
       {/* Over-pax inline error — shown immediately on zone change/pax change
@@ -1489,7 +1859,7 @@ export function PublicBookingForm({
       <button
         type="submit"
         className="btn btn-primary w-full text-base py-3 flex items-center justify-center gap-2"
-        disabled={busy || status.kind === 'success'}
+        disabled={busy || status.kind === 'success' || phaseSoldOut}
       >
         {busy && (
           <span
@@ -1497,7 +1867,7 @@ export function PublicBookingForm({
             className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"
           />
         )}
-        <span>{ctaLabel}</span>
+        <span>{phaseSoldOut ? 'Sold out' : ctaLabel}</span>
       </button>
 
       {isPaid ? (

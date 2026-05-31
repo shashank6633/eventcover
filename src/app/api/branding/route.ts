@@ -16,5 +16,13 @@ export async function GET() {
     ok: true,
     venueName: getConfig('VENUE_NAME', 'EventCover'),
     venueLogo: getConfig('VENUE_LOGO', ''),
+    // The marketing front-end (/, /events) reads About HTML to derive a
+    // tagline and the About section copy. Phone/email power the footer.
+    // These are all already public-facing, so safe to expose here.
+    brandAboutHtml: getConfig('BRAND_ABOUT_HTML', ''),
+    brandSocialLinksJson: getConfig('BRAND_SOCIAL_LINKS_JSON', ''),
+    hostPhone: getConfig('HOST_PHONE', ''),
+    hostEmail: getConfig('HOST_EMAIL', ''),
+    venueAddress: getConfig('VENUE_ADDRESS', ''),
   });
 }
