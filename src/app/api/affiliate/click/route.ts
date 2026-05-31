@@ -6,8 +6,12 @@ export const dynamic = 'force-dynamic';
 
 /**
  * Public endpoint. Logs a click when a customer lands on any page with
- * ?ref=CODE. Returns 200 even on bad/unknown codes so the client-side
- * fire-and-forget never logs a console error in the visitor's browser.
+ * ?ref=CODE or ?t=CODE (Tracking Link). Both URL forms are normalized
+ * client-side by RefCapture into the same { code } body shape, so this
+ * route only needs to handle a single `code` field — the kind of link
+ * (commission vs tracking) is resolved server-side via getAffiliateByCode().
+ * Returns 200 even on bad/unknown codes so the client-side fire-and-forget
+ * never logs a console error in the visitor's browser.
  */
 export async function POST(req: NextRequest) {
   let body: { code?: string; eventId?: string | null; referer?: string | null } = {};

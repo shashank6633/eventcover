@@ -31,6 +31,21 @@ const EDITABLE_KEYS = new Set([
   // Reservego webhook (host-only sub-page)
   'RESERVEGO_WEBHOOK_SECRET',
   'RESERVEGO_AUTO_CREATE_EVENTS',
+  // Meta Pixel + Conversions API (host-only sub-page)
+  'META_PIXEL_ID',
+  'META_CAPI_ACCESS_TOKEN',
+  'META_TEST_EVENT_CODE',
+  // Auto-send wallet pass over WhatsApp on issue (host-only WhatsApp sub-page)
+  'AUTO_SEND_WHATSAPP_PASS',
+  'WALLET_PASS_TEMPLATE',
+  'WALLET_PASS_TEMPLATE_LANG',
+  'WALLET_PASS_TEMPLATE_INCLUDE_LINK',
+  'WALLET_VIEW_TOKEN_TTL_DAYS',
+  // Razorpay payment gateway (host-only sub-page)
+  'RAZORPAY_MODE',
+  'RAZORPAY_KEY_ID',
+  'RAZORPAY_KEY_SECRET',
+  'RAZORPAY_WEBHOOK_SECRET',
   // Legacy / fallback — kept writable so per-event config can still seed the
   // global default, but no longer surfaced on the Settings page.
   'EVENT_NAME',
@@ -38,6 +53,20 @@ const EDITABLE_KEYS = new Set([
   'EVENT_CUTOFF_HOUR',
   'DEFAULT_ENTRY_FEE',
   'PIN_LENGTH',
+  // Settings V2 — Brand
+  'BRAND_ABOUT_HTML',
+  'BRAND_SOCIAL_LINKS_JSON',
+  'VENUE_FAVICON_URL',
+  'VENUE_PUBLIC_URL',
+  // Settings V2 — General → Notifications
+  'WHATSAPP_BOOKING_ALERTS_ENABLED',
+  'SALE_WEBHOOK_URL',
+  // Settings V2 — Finance → Bank Details
+  'BANK_ACCOUNT_HOLDER',
+  'BANK_ACCOUNT_NUMBER',
+  'BANK_IFSC',
+  'BANK_UPI_ID',
+  'BANK_GSTIN',
 ]);
 
 /**
@@ -49,6 +78,12 @@ const EDITABLE_KEYS = new Set([
 const SENSITIVE_KEYS = new Set([
   'INTERAKT_API_SECRET',
   'RESERVEGO_WEBHOOK_SECRET',
+  'META_CAPI_ACCESS_TOKEN',
+  'INTERNAL_TOKEN_SECRET',  // HMAC key for signed URLs — never exposed
+  'RAZORPAY_KEY_SECRET',
+  'RAZORPAY_WEBHOOK_SECRET',
+  // Settings V2 — bank account number is sensitive; mask in GET responses
+  'BANK_ACCOUNT_NUMBER',
 ]);
 
 const MASKED = '••••••••';

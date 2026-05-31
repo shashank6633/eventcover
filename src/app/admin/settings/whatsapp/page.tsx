@@ -41,6 +41,11 @@ export default function WhatsAppSettingsPage() {
   const [businessPhone, setBusinessPhone] = useState('');
   /** When true, OTP_PROVIDER is set to 'whatsapp' (Interakt). When false, falls back to 'console'. */
   const [useWhatsAppForOtp, setUseWhatsAppForOtp] = useState(false);
+  /** When true, AUTO_SEND_WHATSAPP_PASS is set to '1'. Wallet PNG passes are
+   *  pushed to customers' WhatsApp the moment door staff issue them. */
+  const [autoSendPass, setAutoSendPass] = useState(false);
+  const [passTemplate, setPassTemplate] = useState('akan_cover_pass');
+  const [passTemplateLang, setPassTemplateLang] = useState('en');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -85,6 +90,10 @@ export default function WhatsAppSettingsPage() {
       setBusinessPhone(c.INTERAKT_BUSINESS_PHONE || '');
       setApiSecret(c.INTERAKT_API_SECRET === MASKED ? MASKED : '');
       setUseWhatsAppForOtp(c.OTP_PROVIDER === 'whatsapp');
+      const autoVal = (c.AUTO_SEND_WHATSAPP_PASS || '0').trim().toLowerCase();
+      setAutoSendPass(autoVal === '1' || autoVal === 'true');
+      setPassTemplate(c.WALLET_PASS_TEMPLATE || 'akan_cover_pass');
+      setPassTemplateLang(c.WALLET_PASS_TEMPLATE_LANG || 'en');
       setLoaded(true);
     });
     refreshStatus();
@@ -108,6 +117,10 @@ export default function WhatsAppSettingsPage() {
             // Flip the OTP delivery channel together with credentials so the
             // host has one save button for the whole flow.
             OTP_PROVIDER: useWhatsAppForOtp ? 'whatsapp' : 'console',
+            // Wallet pass auto-send (PNG via Interakt with image header)
+            AUTO_SEND_WHATSAPP_PASS: autoSendPass ? '1' : '0',
+            WALLET_PASS_TEMPLATE: passTemplate.trim() || 'akan_cover_pass',
+            WALLET_PASS_TEMPLATE_LANG: passTemplateLang.trim() || 'en',
           },
         }),
       });
@@ -308,6 +321,66 @@ export default function WhatsAppSettingsPage() {
               {!config.secretMasked && !apiSecret && (
                 <div className="text-[11px] text-amber-700 mt-1.5">
                   Save an Interakt API secret first to enable this toggle.
+                </div>
+              )}
+            </div>
+          </label>
+        </div>
+
+        {/* Wallet pass auto-send toggle + template config */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-1 accent-brand-500 cursor-pointer"
+              checked={autoSendPass}
+              onChange={(e) => setAutoSendPass(e.target.checked)}
+              disabled={!config.secretMasked && !apiSecret}
+            />
+            <div className="flex-1">
+              <div className="text-sm font-semibold text-slate-900">
+                Auto-send cover pass on issue
+              </div>
+              <div className="text-xs text-slate-500 mt-1">
+                When ON, every wallet issued at the door fires a WhatsApp message
+                to the customer with the PNG cover pass as the message image.
+                Captain scans the QR straight off their phone — no PDF tap-through.
+                Uses your{' '}
+                <span className="font-mono">{passTemplate || 'akan_cover_pass'}</span>
+                {' '}template (image header).
+              </div>
+              {!config.secretMasked && !apiSecret && (
+                <div className="text-[11px] text-amber-700 mt-1.5">
+                  Save an Interakt API secret first to enable this toggle.
+                </div>
+              )}
+              {autoSendPass && (
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="label text-xs">Template name</label>
+                    <input
+                      className="input font-mono text-sm"
+                      value={passTemplate}
+                      onChange={(e) => setPassTemplate(e.target.value)}
+                      placeholder="akan_cover_pass"
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </div>
+                  <div>
+                    <label className="label text-xs">Language code</label>
+                    <input
+                      className="input font-mono text-sm"
+                      value={passTemplateLang}
+                      onChange={(e) => setPassTemplateLang(e.target.value)}
+                      placeholder="en"
+                      maxLength={6}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </div>
+                  <div className="sm:col-span-2 text-[11px] text-slate-500">
+                    Approve a template in Interakt with: HEADER=Image, BODY=
+                    <span className="font-mono">{`Hi {{1}}, your cover pass for {{2}} is ready. Show this QR at the door — no PIN needed for scan.`}</span>
+                  </div>
                 </div>
               )}
             </div>

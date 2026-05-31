@@ -434,6 +434,36 @@ function IssueClient() {
               type="button"
               className="btn btn-primary flex-1"
               onClick={async () => {
+                // PNG — best for WhatsApp inline send + fast door scans.
+                // Browser-fetch the image, then open it in a new tab so the
+                // operator can long-press → Save / Share.
+                try {
+                  const url = `/api/wallets/${encodeURIComponent(result.txnId)}/image?qrCodeId=${encodeURIComponent(result.pin)}`;
+                  const res = await fetch(url);
+                  if (!res.ok) {
+                    const err = await res.json().catch(() => ({ message: 'Failed' }));
+                    alert(`Could not load QR image: ${err.message}`);
+                    return;
+                  }
+                  const blob = await res.blob();
+                  const objUrl = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = objUrl;
+                  a.download = `cover-pass-${result.txnId}.png`;
+                  a.click();
+                  URL.revokeObjectURL(objUrl);
+                } catch (e) {
+                  alert(e instanceof Error ? e.message : 'Network error');
+                }
+              }}
+            >
+              📱 Save QR Image (for WhatsApp)
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary flex-1"
+              onClick={async () => {
+                // PDF — formal receipt option (multi-page, brandable, printable)
                 try {
                   const res = await fetch(`/api/wallets/${encodeURIComponent(result.txnId)}/pass`, {
                     method: 'POST',
@@ -457,7 +487,7 @@ function IssueClient() {
                 }
               }}
             >
-              ↓ Download Pass PDF
+              ↓ Receipt PDF
             </button>
             <button className="btn btn-secondary flex-1" onClick={resetForNext}>Issue next wallet</button>
           </div>

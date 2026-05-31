@@ -284,6 +284,71 @@ function initSchema(db: Database.Database) {
     // auto-creates a draft event and attaches the reservation. When 'false',
     // missing event → 404 and Reservego's delivery is rejected.
     ['RESERVEGO_AUTO_CREATE_EVENTS', 'true'],
+    // Meta Pixel + Conversions API (CAPI). PIXEL_ID is the public-facing
+    // identifier; ACCESS_TOKEN is sensitive (masked by /api/config).
+    // TEST_EVENT_CODE is optional — when set, server-side events show up in
+    // Meta's Test Events tab for verification.
+    ['META_PIXEL_ID', ''],
+    ['META_CAPI_ACCESS_TOKEN', ''],
+    ['META_TEST_EVENT_CODE', ''],
+    // WhatsApp auto-send of wallet pass PNG. When '1', POST /api/wallets
+    // fires Interakt with the cover_pass template right after issue.
+    // Template name + language are configurable so different venues can
+    // have their own approved templates.
+    ['AUTO_SEND_WHATSAPP_PASS', '0'],
+    ['WALLET_PASS_TEMPLATE', 'akan_cover_pass'],
+    ['WALLET_PASS_TEMPLATE_LANG', 'en'],
+    // Append wallet-view URL as {{3}}; flip to '0' for legacy 2-var templates.
+    ['WALLET_PASS_TEMPLATE_INCLUDE_LINK', '1'],
+    // TTL (days) for the wallet-view HMAC token embedded in the {{3}} URL.
+    // Customers keep this link open as a "card" — longer than the pass PNG TTL.
+    ['WALLET_VIEW_TOKEN_TTL_DAYS', '90'],
+    // HMAC secret used by signed-url.ts. Auto-generated on first read if
+    // blank — keep empty here so each install gets a unique value.
+    ['INTERNAL_TOKEN_SECRET', ''],
+    // Razorpay payment gateway. MODE switches between 'test' and 'live'
+    // keypairs — the host should configure both sets and just flip the
+    // switch when going live. WEBHOOK_SECRET is the shared secret Razorpay
+    // signs webhook payloads with (Dashboard → Webhooks).
+    ['RAZORPAY_MODE', 'test'],
+    ['RAZORPAY_KEY_ID', ''],
+    ['RAZORPAY_KEY_SECRET', ''],
+    ['RAZORPAY_WEBHOOK_SECRET', ''],
+    // ─── Event Insights — analytics + cart recovery ────────────────────────
+    // ANALYTICS_IP_SALT_DAILY rotates lazily on first read after UTC midnight
+    // (see event-analytics.ts). _UPDATED_AT tracks the last rotation epoch.
+    // CART_RECOVERY_* tunables gate the auto-sweep side-effect on the
+    // insights GET — keeps Interakt traffic under the 40 req/min cap.
+    ['ANALYTICS_IP_SALT_DAILY', ''],
+    ['ANALYTICS_IP_SALT_UPDATED_AT', '0'],
+    ['CART_RECOVERY_SWEEP_INTERVAL_SECONDS', '300'],
+    ['CART_RECOVERY_MAX_PER_SWEEP', '25'],
+    ['CART_RECOVERY_DEFAULT_TEMPLATE', 'akan_cart_recovery'],
+    // ─── Settings V2 — Brand + General + Finance ──────────────────────────
+    // Brand Page → About (rich text) + Socials (JSON array of {kind,url}, ≤5)
+    ['BRAND_ABOUT_HTML', ''],
+    ['BRAND_SOCIAL_LINKS_JSON', '[]'],
+    // Brand Page → Website
+    ['VENUE_FAVICON_URL', ''],
+    ['VENUE_PUBLIC_URL', ''],
+    // General → Notifications
+    ['WHATSAPP_BOOKING_ALERTS_ENABLED', '0'],
+    ['SALE_WEBHOOK_URL', ''],
+    // Finance → Bank Details (BANK_ACCOUNT_NUMBER masked by /api/config)
+    ['BANK_ACCOUNT_HOLDER', ''],
+    ['BANK_ACCOUNT_NUMBER', ''],
+    ['BANK_IFSC', ''],
+    ['BANK_UPI_ID', ''],
+    ['BANK_GSTIN', ''],
+    // ─── Per-event Settings — fee structure ──────────────────────────────
+    // Default processing fees applied by /api/payments/order when an event
+    // is configured with its payer ("customer" pays on top vs. "host"
+    // absorbs from payout). Hosts can leave these at 0 to disable a fee
+    // category entirely. PAYMENT_GATEWAY_FEE_PCT defaults to Razorpay's
+    // 2% standard processing rate; PLATFORM_FEE_PCT starts at 0 so venues
+    // explicitly opt into a commission share.
+    ['PAYMENT_GATEWAY_FEE_PCT', '2'],
+    ['PLATFORM_FEE_PCT', '0'],
   ];
   const up = db.prepare('INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)');
   for (const [k, v] of seed) up.run(k, v);
@@ -369,6 +434,14 @@ function migrate(db: Database.Database) {
   addEvCol('booking_types',   "TEXT DEFAULT '[]'");
   addEvCol('messages_config', "TEXT DEFAULT '{}'");
 
+  // ─── Public landing-page slugs + per-event Meta Pixel override ───────────
+  // `slug` powers /e/<slug> public URLs (auto-generated on create/update).
+  // `meta_pixel_id` lets a specific event use a different Pixel than the
+  // global one (e.g. a co-branded campaign). Both are nullable.
+  addEvCol('slug',            'TEXT');
+  addEvCol('meta_pixel_id',   'TEXT');
+  try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_events_slug ON events(slug) WHERE slug IS NOT NULL'); } catch { /* idempotent */ }
+
   // Pricing engine columns
   addEvCol('entry_fee_per_person', 'REAL DEFAULT 500');
   addEvCol('cover_male_stag',      'REAL DEFAULT 2000');
@@ -380,6 +453,82 @@ function migrate(db: Database.Database) {
   addEvCol('occupancy_rule',       "TEXT DEFAULT 'exact'");
   addEvCol('gst_percent',          'REAL DEFAULT 0');
   addEvCol('discount_percent',     'REAL DEFAULT 0');
+
+  // ─── Per-event Settings — Inquiry phone + fee payer config ──────────────
+  // inquiry_phone: optional override for the brand-page HOST_PHONE when
+  //   sending Contact-host inquiry WhatsApp pings; NULL falls back to brand.
+  // payment_gateway_fee_payer / platform_fee_payer: who eats the fee?
+  //   • 'customer' — fee is added on top at checkout (customer sees price+fee)
+  //   • 'host'     — fee is absorbed from the host's payout (default)
+  // gst_enabled: master toggle for GST application (gst_percent already exists
+  //   in the pricing engine block above and is reused as the rate).
+  addEvCol('inquiry_phone',                  'TEXT');
+  addEvCol('payment_gateway_fee_payer',      "TEXT DEFAULT 'host'");
+  addEvCol('platform_fee_payer',             "TEXT DEFAULT 'host'");
+  addEvCol('gst_enabled',                    'INTEGER DEFAULT 0');
+
+  // Online payment mode per event. 'none' (default) skips Razorpay entirely;
+  // 'deposit' charges a fixed deposit_amount up front; 'full_cover' charges
+  // entry_fee + cover at the time of booking and auto-issues a wallet on
+  // capture. Existing rows stay on 'none' so legacy events keep working.
+  addEvCol('payment_mode',    "TEXT DEFAULT 'none'");
+  addEvCol('deposit_amount',  'REAL DEFAULT 0');
+
+  // ─── Growezzy P1 — Basic Info + Additional Info expansions ──────────────
+  // `one_line_summary` shows in Meta Ad previews and on event listings.
+  // Capped at 100 chars by the UI but stored as plain TEXT.
+  // `refund_policy` rendered on the public /event/[slug] page next to T&C.
+  addEvCol('one_line_summary', 'TEXT');
+  addEvCol('refund_policy',    'TEXT');
+
+  // Card image — 2:3 portrait (800×1200). Distinct from `image_data` which is
+  // the 1:1 hero (Cover Image). Shown on listing cards + social-share previews.
+  // Stored as base64 just like image_data; future S3 migration swaps both at once.
+  addEvCol('card_image',       'TEXT');
+
+  // ─── Growezzy P4 — RSVP Form ────────────────────────────────────────────
+  // Per-event JSON array of FieldDef {id,label,type,required,options?}.
+  // Empty array (column DEFAULT) = no custom fields; the public booking form
+  // renders the standard fields only. Persisted as TEXT so legacy events
+  // keep working without any data migration — parseRsvpFields() in
+  // src/lib/events.ts handles NULL / '[]' / garbage uniformly.
+  addEvCol('rsvp_fields_json', "TEXT DEFAULT '[]'");
+
+  // ─── Payments (Razorpay) ─────────────────────────────────────────────────
+  // One row per checkout attempt. We create the row in 'created' state before
+  // calling Razorpay so a failed network round-trip still leaves an audit
+  // trail. razorpay_order_id is filled once the upstream call returns; the
+  // payment_id + signature land after the customer completes checkout.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS payments (
+      id TEXT PRIMARY KEY,
+      reservation_id TEXT,
+      event_id TEXT NOT NULL,
+      razorpay_order_id TEXT NOT NULL,
+      razorpay_payment_id TEXT,
+      razorpay_signature TEXT,
+      amount REAL NOT NULL,
+      amount_paise INTEGER NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'INR',
+      status TEXT NOT NULL DEFAULT 'created',
+      payer_name TEXT,
+      payer_phone TEXT,
+      payer_email TEXT,
+      payment_mode TEXT,
+      txn_id TEXT,
+      notes TEXT,
+      error_code TEXT,
+      error_description TEXT,
+      webhook_received_at INTEGER,
+      verified_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(razorpay_order_id);
+    CREATE INDEX IF NOT EXISTS idx_payments_reservation ON payments(reservation_id);
+    CREATE INDEX IF NOT EXISTS idx_payments_event ON payments(event_id);
+    CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+  `);
 
   // ─── Affiliate tracking ──────────────────────────────────────────────
   // Each affiliate is an external promoter with a unique ref code. Clicks
@@ -465,6 +614,18 @@ function migrate(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_assignments_event     ON affiliate_event_assignments(event_id);
     CREATE INDEX IF NOT EXISTS idx_assignments_affiliate ON affiliate_event_assignments(affiliate_id);
   `);
+
+  // ─── Per-event Promote — affiliates.kind ────────────────────────────────
+  // 'commission' (default, today's behavior) | 'tracking' (commission-free
+  // channel attribution links). Tracking links share the same attribution
+  // funnel as commission affiliates but always carry commission_value=0 so
+  // attributeTicket() short-circuits and never accrues commissions.
+  const affCols = db.prepare('PRAGMA table_info(affiliates)').all() as { name: string }[];
+  const addAffCol = (name: string, ddl: string) => {
+    if (!affCols.some((c) => c.name === name)) db.exec(`ALTER TABLE affiliates ADD COLUMN ${name} ${ddl}`);
+  };
+  addAffCol('kind', "TEXT NOT NULL DEFAULT 'commission'");
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_affiliates_kind ON affiliates(kind)'); } catch { /* idempotent */ }
 
   // Attribution fields stamped onto the ticket itself for fast joins + history
   const ticketCols = db.prepare('PRAGMA table_info(tickets)').all() as { name: string }[];
@@ -575,6 +736,561 @@ function migrate(db: Database.Database) {
   addResCol('bday',              'TEXT');
   addResCol('anniv',             'TEXT');
   addResCol('total_visits',      'INTEGER');
+
+  // ─── Growezzy P4 — RSVP Form answers ────────────────────────────────────
+  // Per-reservation JSON {fieldId: string | string[]} mirroring whatever
+  // FieldDef array was on the event at booking time. NULL when the event
+  // had no rsvp_fields configured. Server-side validation lives in
+  // /api/reservations/public — bad payloads never reach this column.
+  addResCol('rsvp_answers_json', 'TEXT');
+
+  // ─── Phase 2: Coupons ────────────────────────────────────────────────────
+  // event_coupons holds discount codes. event_id NULL means "venue-wide" —
+  // applies to any event. discount_type is 'fixed' (INR off) or 'percent'
+  // (% off, 0-100). used_count is denormalized; incremented inside the
+  // payment-verify transaction so concurrent checkouts can't blow past
+  // max_uses (NULL means unlimited).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_coupons (
+      id              TEXT PRIMARY KEY,
+      event_id        TEXT REFERENCES events(id) ON DELETE CASCADE,
+      code            TEXT NOT NULL,
+      discount_type   TEXT NOT NULL CHECK(discount_type IN ('fixed','percent')),
+      discount_value  REAL NOT NULL,
+      max_uses        INTEGER,
+      used_count      INTEGER NOT NULL DEFAULT 0,
+      expires_at      INTEGER,
+      active          INTEGER NOT NULL DEFAULT 1,
+      notes           TEXT,
+      created_at      INTEGER NOT NULL,
+      created_by      TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_coupons_event_code
+      ON event_coupons(IFNULL(event_id, ''), code);
+    CREATE INDEX IF NOT EXISTS idx_coupons_event  ON event_coupons(event_id);
+    CREATE INDEX IF NOT EXISTS idx_coupons_active ON event_coupons(active, expires_at);
+  `);
+
+  // Additive: affiliate_id stamp on coupons so affiliate-attributed
+  // sales can pay commissions when a coupon is also applied. NULL
+  // (default) means no affiliate is credited for redemptions of this code.
+  const cpnCols = db.prepare('PRAGMA table_info(event_coupons)').all() as { name: string }[];
+  const addCpnCol = (name: string, ddl: string) => {
+    if (!cpnCols.some((c) => c.name === name)) db.exec(`ALTER TABLE event_coupons ADD COLUMN ${name} ${ddl}`);
+  };
+  addCpnCol('affiliate_id', 'TEXT REFERENCES affiliates(id) ON DELETE SET NULL');
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_coupons_affiliate ON event_coupons(affiliate_id)'); } catch { /* idempotent */ }
+
+  // coupon_redemptions — one row per (coupon, payment) so we have a real
+  // audit trail of which payment used which coupon (analytics + reversal).
+  // UNIQUE(coupon_id, payment_id) makes the insert idempotent against
+  // verify retries.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS coupon_redemptions (
+      id              TEXT PRIMARY KEY,
+      coupon_id       TEXT NOT NULL REFERENCES event_coupons(id) ON DELETE CASCADE,
+      payment_id      TEXT NOT NULL REFERENCES payments(id) ON DELETE CASCADE,
+      event_id        TEXT,
+      reservation_id  TEXT,
+      discount_amount REAL NOT NULL,
+      created_at      INTEGER NOT NULL,
+      UNIQUE(coupon_id, payment_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_coupon  ON coupon_redemptions(coupon_id);
+    CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_payment ON coupon_redemptions(payment_id);
+  `);
+
+  // ─── Phase 2: Event media gallery ───────────────────────────────────────
+  // Public landing page can render a horizontal-scroll carousel below the
+  // hero. image_data is the same base64 data URL the events table uses
+  // (produced by ImageUpload), so no new infra required. sort_order is
+  // 0-based; reorder API rewrites the column inside a tx.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_media (
+      id          TEXT PRIMARY KEY,
+      event_id    TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      image_data  TEXT NOT NULL,
+      caption     TEXT,
+      sort_order  INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL,
+      created_by  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_event_media_event_order
+      ON event_media(event_id, sort_order);
+  `);
+
+  // ─── Phase 2: payments coupon stamping ──────────────────────────────────
+  // Additive — stamps the coupon used (if any) on the payment row so we
+  // have an audit trail without a separate join. coupon_id refs
+  // event_coupons.id; coupon_code is a denormalized snapshot of what the
+  // customer typed; discount_amount is the INR reduction we applied
+  // before talking to Razorpay.
+  const payCols = db.prepare('PRAGMA table_info(payments)').all() as { name: string }[];
+  const addPayCol = (name: string, ddl: string) => {
+    if (!payCols.some((c) => c.name === name)) db.exec(`ALTER TABLE payments ADD COLUMN ${name} ${ddl}`);
+  };
+  addPayCol('coupon_id',       'TEXT');
+  addPayCol('coupon_code',     'TEXT');
+  addPayCol('discount_amount', 'REAL DEFAULT 0');
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_payments_coupon ON payments(coupon_id)'); } catch { /* idempotent */ }
+
+  // ─── Phase 3: Invite-only + Multi-slot schedule ──────────────────────────
+  //
+  // (1) INVITE ONLY — three additive columns on events.
+  //   • access_mode:    'public' | 'invite_link' | 'phone_list'
+  //   • invite_secret:  nanoid(20) generated when access_mode flips to
+  //                     'invite_link'. Nullable until then.
+  //   • invite_message: optional copy shown on the soft-gate page.
+  //
+  // These columns are strictly additive — every existing event row gets
+  // access_mode='public' by default, preserving today's behavior.
+  addEvCol('access_mode',    "TEXT NOT NULL DEFAULT 'public'");
+  addEvCol('invite_secret',  'TEXT');
+  addEvCol('invite_message', 'TEXT');
+
+  // ─── Phase 4: Ticket Design ──────────────────────────────────────────────
+  // Per-event override of the wallet pass PNG visual layout. Stored as JSON
+  // {background, accent, text, show_logo, show_date, layout} — empty object
+  // or NULL means "use the built-in BRAND/INK defaults from pass-image.ts".
+  // DEFAULT '{}' so legacy rows hydrate to {} and the renderer falls back
+  // cleanly without a separate backfill step.
+  addEvCol('ticket_design_json', "TEXT DEFAULT '{}'");
+
+  // event_invitees — phone-list mode entries. Phones are stored already
+  // normalized via normalizePhone(). Unique-per-event so the same phone
+  // can be invited to different events. used flips to 1 inside the same
+  // reservation transaction to prevent re-use.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_invitees (
+      id                   TEXT PRIMARY KEY,
+      event_id             TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      phone                TEXT NOT NULL,
+      name                 TEXT,
+      plus_ones_allowed    INTEGER NOT NULL DEFAULT 0,
+      used                 INTEGER NOT NULL DEFAULT 0,
+      used_at              INTEGER,
+      used_reservation_id  TEXT,
+      notes                TEXT,
+      created_at           INTEGER NOT NULL,
+      created_by           TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_event_invitees_event_phone
+      ON event_invitees(event_id, phone);
+    CREATE INDEX IF NOT EXISTS idx_event_invitees_used
+      ON event_invitees(event_id, used);
+  `);
+
+  // (2) MULTI-SLOT SCHEDULE — event_slots + reservations.slot_id.
+  //
+  // events.event_date + events.start_time stay the source of truth when
+  // an event has zero active slots (back-compat — legacy events keep
+  // working without any UI change).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_slots (
+      id            TEXT PRIMARY KEY,
+      event_id      TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      slot_date     TEXT NOT NULL,
+      start_time    TEXT NOT NULL,
+      end_time      TEXT,
+      label         TEXT,
+      max_capacity  INTEGER,
+      sort_order    INTEGER NOT NULL DEFAULT 0,
+      active        INTEGER NOT NULL DEFAULT 1,
+      created_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_event_slots_event_order
+      ON event_slots(event_id, active, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_event_slots_date
+      ON event_slots(slot_date);
+  `);
+
+  // reservations.slot_id — nullable so legacy + single-slot events keep
+  // working. Partial index keeps the hot path cheap (capacity COUNT(*)).
+  // Note: re-read PRAGMA so we don't ALTER a stale column list, since the
+  // reservations table may have been recreated above for nullability fix.
+  const resColsForSlot = db.prepare('PRAGMA table_info(reservations)').all() as { name: string }[];
+  if (!resColsForSlot.some((c) => c.name === 'slot_id')) {
+    db.exec('ALTER TABLE reservations ADD COLUMN slot_id TEXT REFERENCES event_slots(id)');
+  }
+  try {
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_reservations_slot
+         ON reservations(slot_id) WHERE slot_id IS NOT NULL`,
+    );
+  } catch { /* idempotent */ }
+
+  // ─── Multi-stage check-in + cover redemption (reservation-as-wallet) ─────
+  //
+  // The reservation row becomes its own wallet for booked guests. We add
+  // additive numeric counters + a ledger-specific status that's distinct
+  // from the existing booking-lifecycle `status` (pending/converted/
+  // no_show/cancelled). The shared-QR scan flow at the door reads/writes
+  // these columns inside db.transaction() blocks so concurrent scans
+  // serialize via better-sqlite3's single-writer model.
+  //
+  // Naming note: we KEEP existing `pax` as physical storage and expose
+  // total_pax as an alias via the lib layer. A coordinated rename would
+  // collide with the webhook upsert + public booking paths that other
+  // in-flight workflows are also touching. We do add a total_pax column
+  // backfilled from pax for callers that want a stable schema-level name,
+  // but the lib layer treats reservations.pax as the source of truth.
+  const resColsForLedger = db.prepare('PRAGMA table_info(reservations)').all() as { name: string }[];
+  const addLedgerCol = (name: string, ddl: string) => {
+    if (!resColsForLedger.some((c) => c.name === name)) db.exec(`ALTER TABLE reservations ADD COLUMN ${name} ${ddl}`);
+  };
+  addLedgerCol('total_pax',          'INTEGER DEFAULT 0');
+  addLedgerCol('checked_in_pax',     'INTEGER DEFAULT 0');
+  addLedgerCol('entry_amount',       'REAL DEFAULT 0');
+  addLedgerCol('cover_amount',       'REAL DEFAULT 0');
+  addLedgerCol('cover_redeemed',     'REAL DEFAULT 0');
+  addLedgerCol('reservation_status', "TEXT DEFAULT 'pending'");
+
+  // One-time backfill: copy pax → total_pax for legacy rows where total_pax
+  // is still 0 but pax has a real value. Idempotent: subsequent runs no-op
+  // because the WHERE clause excludes already-backfilled rows.
+  try {
+    db.exec(`UPDATE reservations SET total_pax = pax WHERE (total_pax IS NULL OR total_pax = 0) AND pax > 0`);
+  } catch { /* idempotent */ }
+
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_reservations_reservation_status ON reservations(reservation_status)`);
+  } catch { /* idempotent */ }
+
+  // Check-in ledger — append-only event log. Reversals are recorded as a
+  // negative checked_in_pax row + flipping reversed_at/by on the original.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS reservation_checkins (
+      id              TEXT PRIMARY KEY,
+      reservation_id  TEXT NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
+      checked_in_pax  INTEGER NOT NULL,
+      checked_in_by   TEXT NOT NULL,
+      notes           TEXT,
+      status          TEXT NOT NULL DEFAULT 'success',
+      reversed_at     INTEGER,
+      reversed_by     TEXT,
+      timestamp       INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_checkins_reservation ON reservation_checkins(reservation_id, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_checkins_timestamp ON reservation_checkins(timestamp DESC);
+  `);
+
+  // Cover redemption ledger. The partial unique index enforces "same bill_id
+  // can't be charged twice while still active" — a reversed row drops out of
+  // the constraint so a corrected bill can be re-billed.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cover_redemptions (
+      id              TEXT PRIMARY KEY,
+      reservation_id  TEXT NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
+      bill_id         TEXT,
+      redeemed_amount REAL NOT NULL,
+      redeemed_by     TEXT NOT NULL,
+      notes           TEXT,
+      status          TEXT NOT NULL DEFAULT 'success',
+      reversed_at     INTEGER,
+      reversed_by     TEXT,
+      timestamp       INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cover_redemptions_reservation ON cover_redemptions(reservation_id, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_cover_redemptions_timestamp ON cover_redemptions(timestamp DESC);
+  `);
+  try {
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS ux_cover_redemptions_active_bill
+         ON cover_redemptions(reservation_id, bill_id)
+         WHERE bill_id IS NOT NULL AND status = 'success'`,
+    );
+  } catch { /* idempotent */ }
+
+  // ─── Seating Layout — per-event venue SVG + named zones ─────────────────
+  // Opt-in feature: when seating_layout_enabled, the public booking flow
+  // renders the sanitized SVG inline and the chosen zone's price overrides
+  // events.entry_fee_per_person. Legacy + non-seated events read 0 for the
+  // enabled flag and continue using the flat-pricing flow unchanged.
+  // Re-read the events column list since this migrate() runs many ALTERs.
+  const evColsForSeating = db.prepare('PRAGMA table_info(events)').all() as { name: string }[];
+  const addEvColSeating = (name: string, ddl: string) => {
+    if (!evColsForSeating.some((c) => c.name === name)) db.exec(`ALTER TABLE events ADD COLUMN ${name} ${ddl}`);
+  };
+  addEvColSeating('seating_layout_enabled',        'INTEGER DEFAULT 0');
+  addEvColSeating('seating_layout_svg',            'TEXT');
+  addEvColSeating('seating_layout_phases_enabled', 'INTEGER DEFAULT 0');
+
+  // event_zones — one row per named SVG layer; zone_id matches the SVG id
+  // attribute (admin-editable). sold_count is the denormalized counter
+  // updated inside the payments/verify transaction (mirrors coupons).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_zones (
+      id          TEXT PRIMARY KEY,
+      event_id    TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      zone_id     TEXT NOT NULL,
+      zone_label  TEXT NOT NULL,
+      price       REAL NOT NULL DEFAULT 0,
+      capacity    INTEGER NOT NULL DEFAULT 0,
+      sold_count  INTEGER NOT NULL DEFAULT 0,
+      color       TEXT,
+      sort_order  INTEGER NOT NULL DEFAULT 0,
+      active      INTEGER NOT NULL DEFAULT 1,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_event_zones_event_zone ON event_zones(event_id, zone_id);
+    CREATE INDEX IF NOT EXISTS idx_event_zones_event_order ON event_zones(event_id, sort_order, created_at);
+    CREATE INDEX IF NOT EXISTS idx_event_zones_active ON event_zones(event_id, active);
+  `);
+
+  // reservations.zone_id + zone_pax_count + zone_price_snapshot — link a
+  // booking to its zone with a frozen per-seat price. Nullable so legacy
+  // + non-seated events keep working. Re-read PRAGMA so we don't ALTER a
+  // stale column list — earlier blocks may have recreated reservations.
+  const resColsForZone = db.prepare('PRAGMA table_info(reservations)').all() as { name: string }[];
+  const addResColZone = (name: string, ddl: string) => {
+    if (!resColsForZone.some((c) => c.name === name)) db.exec(`ALTER TABLE reservations ADD COLUMN ${name} ${ddl}`);
+  };
+  addResColZone('zone_id',             'TEXT');
+  addResColZone('zone_pax_count',      'INTEGER DEFAULT 0');
+  addResColZone('zone_price_snapshot', 'REAL');
+  try {
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_reservations_zone
+         ON reservations(zone_id) WHERE zone_id IS NOT NULL`,
+    );
+  } catch { /* idempotent */ }
+
+  // payments.zone_id — denormalized snapshot for audit (mirrors coupon_id).
+  const payColsForZone = db.prepare('PRAGMA table_info(payments)').all() as { name: string }[];
+  if (!payColsForZone.some((c) => c.name === 'zone_id')) {
+    db.exec('ALTER TABLE payments ADD COLUMN zone_id TEXT');
+  }
+
+  // ─── Event Insights — per-event analytics + cart-recovery ────────────────
+  // event_analytics_events is an append-only log of customer-funnel events
+  // emitted from both the client (page_view, book_click, ticket_selected,
+  // checkout_started) AND the server (checkout_success, checkout_failed).
+  // No FK to events(id) because seeding/cross-env replicas may race; we
+  // validate event_id at write time inside event-analytics.ts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_analytics_events (
+      id            TEXT PRIMARY KEY,
+      event_id      TEXT NOT NULL,
+      session_id    TEXT NOT NULL,
+      kind          TEXT NOT NULL CHECK(kind IN (
+                       'page_view','book_click','ticket_selected',
+                       'checkout_started','payment_initiated',
+                       'checkout_success','checkout_failed',
+                       'page_scroll_depth'
+                    )),
+      metadata_json TEXT,
+      ip_hash       TEXT,
+      user_agent    TEXT,
+      timestamp     INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_eae_event_kind_ts
+      ON event_analytics_events(event_id, kind, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_eae_event_session
+      ON event_analytics_events(event_id, session_id);
+    CREATE INDEX IF NOT EXISTS idx_eae_event_ts
+      ON event_analytics_events(event_id, timestamp DESC);
+  `);
+
+  // ─── Migration: widen event_analytics_events.kind CHECK constraint ─────
+  // Older deployments created the table with the original 6-kind CHECK.
+  // Insights v2 adds 'payment_initiated' + 'page_scroll_depth'. SQLite
+  // can't ALTER a CHECK, so we rebuild via the standard rename/copy/drop
+  // dance — but only when the existing constraint is missing the new
+  // kinds. Detection: probe sqlite_master for the table's sql and look
+  // for the new kind names.
+  try {
+    const tblSql = db.prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'event_analytics_events'`,
+    ).get() as { sql: string | null } | undefined;
+    const sql = tblSql?.sql || '';
+    if (sql && (!sql.includes('payment_initiated') || !sql.includes('page_scroll_depth'))) {
+      db.exec('BEGIN');
+      try {
+        db.exec(`ALTER TABLE event_analytics_events RENAME TO event_analytics_events_old`);
+        db.exec(`
+          CREATE TABLE event_analytics_events (
+            id            TEXT PRIMARY KEY,
+            event_id      TEXT NOT NULL,
+            session_id    TEXT NOT NULL,
+            kind          TEXT NOT NULL CHECK(kind IN (
+                             'page_view','book_click','ticket_selected',
+                             'checkout_started','payment_initiated',
+                             'checkout_success','checkout_failed',
+                             'page_scroll_depth'
+                          )),
+            metadata_json TEXT,
+            ip_hash       TEXT,
+            user_agent    TEXT,
+            timestamp     INTEGER NOT NULL
+          );
+        `);
+        db.exec(`
+          INSERT INTO event_analytics_events
+            (id, event_id, session_id, kind, metadata_json, ip_hash, user_agent, timestamp)
+          SELECT id, event_id, session_id, kind, metadata_json, ip_hash, user_agent, timestamp
+          FROM event_analytics_events_old
+        `);
+        db.exec(`DROP TABLE event_analytics_events_old`);
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_eae_event_kind_ts
+                 ON event_analytics_events(event_id, kind, timestamp DESC)`);
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_eae_event_session
+                 ON event_analytics_events(event_id, session_id)`);
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_eae_event_ts
+                 ON event_analytics_events(event_id, timestamp DESC)`);
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
+    }
+  } catch { /* best-effort migration */ }
+
+  // event_cart_recovery_config — per-event opt-in WhatsApp follow-up.
+  // delay_minutes ∈ {30,60,120,240} matches the UI chip choices.
+  // last_swept_at gates the "auto-sweep on insights GET" side-effect.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_cart_recovery_config (
+      event_id       TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+      enabled        INTEGER NOT NULL DEFAULT 0,
+      delay_minutes  INTEGER NOT NULL DEFAULT 60 CHECK(delay_minutes IN (30,60,120,240)),
+      template_name  TEXT NOT NULL DEFAULT 'akan_cart_recovery',
+      template_lang  TEXT NOT NULL DEFAULT 'en',
+      last_swept_at  INTEGER NOT NULL DEFAULT 0,
+      created_at     INTEGER NOT NULL,
+      updated_at     INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ecrc_enabled
+      ON event_cart_recovery_config(enabled, last_swept_at);
+  `);
+
+  // event_cart_recovery_attempts — one row per WhatsApp recovery send.
+  // UNIQUE(source, source_id) ensures we never spam the same abandoned
+  // cart twice; recovered_at is stamped when the matching payment captures.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_cart_recovery_attempts (
+      id                   TEXT PRIMARY KEY,
+      event_id             TEXT NOT NULL,
+      source               TEXT NOT NULL CHECK(source IN ('payment','reservation')),
+      source_id            TEXT NOT NULL,
+      phone                TEXT,
+      customer_name        TEXT,
+      template_name        TEXT NOT NULL,
+      interakt_message_id  TEXT,
+      sent_at              INTEGER NOT NULL,
+      recovered_at         INTEGER,
+      recovered_payment_id TEXT,
+      error                TEXT,
+      created_at           INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_ecra_source
+      ON event_cart_recovery_attempts(source, source_id);
+    CREATE INDEX IF NOT EXISTS idx_ecra_event_sent
+      ON event_cart_recovery_attempts(event_id, sent_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ecra_recovered
+      ON event_cart_recovery_attempts(event_id, recovered_at);
+  `);
+
+  // ─── Per-event Manage page — Reminders, Post-Sale Comm, Recap Gallery ──
+  // Strictly additive blocks. Each table is created idempotently via IF NOT
+  // EXISTS. Max-2-active-schedules-per-event is enforced in the app layer
+  // (src/lib/event-reminders.ts), not via a check constraint, so a host can
+  // freely toggle schedules on/off without falling under the cap.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_reminder_schedule (
+      id              TEXT PRIMARY KEY,
+      event_id        TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      minutes_before  INTEGER NOT NULL CHECK(minutes_before > 0 AND minutes_before <= 1440),
+      enabled         INTEGER NOT NULL DEFAULT 1,
+      last_fired_at   INTEGER NOT NULL DEFAULT 0,
+      created_at      INTEGER NOT NULL,
+      created_by      TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ers_event_enabled
+      ON event_reminder_schedule(event_id, enabled);
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_ers_event_minutes
+      ON event_reminder_schedule(event_id, minutes_before);
+  `);
+
+  // event_reminder_attempts — one row per send, primary dedup via UNIQUE
+  // (schedule_id, reservation_id). Allows the sweep to safely re-run.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_reminder_attempts (
+      id                  TEXT PRIMARY KEY,
+      schedule_id         TEXT NOT NULL REFERENCES event_reminder_schedule(id) ON DELETE CASCADE,
+      reservation_id      TEXT NOT NULL,
+      sent_at             INTEGER NOT NULL,
+      interakt_message_id TEXT,
+      error               TEXT,
+      created_at          INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_era_schedule_reservation
+      ON event_reminder_attempts(schedule_id, reservation_id);
+    CREATE INDEX IF NOT EXISTS idx_era_reservation
+      ON event_reminder_attempts(reservation_id);
+  `);
+
+  // event_post_sale_comm — per-event template config. PK is event_id so a
+  // host has exactly one config row per event (upsert semantics).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_post_sale_comm (
+      event_id          TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+      message_text      TEXT,
+      attachment_kind   TEXT NOT NULL DEFAULT 'none' CHECK(attachment_kind IN ('none','pdf')),
+      attachment_url    TEXT,
+      enabled           INTEGER NOT NULL DEFAULT 0,
+      template_text     TEXT NOT NULL DEFAULT 'event_post_sale_text',
+      template_doc      TEXT NOT NULL DEFAULT 'event_post_sale_doc',
+      template_lang     TEXT NOT NULL DEFAULT 'en',
+      updated_at        INTEGER NOT NULL,
+      updated_by        TEXT
+    );
+  `);
+
+  // event_post_sale_attempts — companion ledger. UNIQUE(payment_id) is the
+  // primary guard against /api/payments/verify retries re-sending the WA.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_post_sale_attempts (
+      id                  TEXT PRIMARY KEY,
+      event_id            TEXT NOT NULL,
+      payment_id          TEXT NOT NULL,
+      reservation_id      TEXT,
+      interakt_message_id TEXT,
+      error               TEXT,
+      sent_at             INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_epsa_payment
+      ON event_post_sale_attempts(payment_id);
+    CREATE INDEX IF NOT EXISTS idx_epsa_event_sent
+      ON event_post_sale_attempts(event_id, sent_at DESC);
+  `);
+
+  // event_recap_media — distinct from event_media (the pre-event sales
+  // gallery). Same shape so the existing reorder pattern transplants 1:1.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_recap_media (
+      id           TEXT PRIMARY KEY,
+      event_id     TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      image_data   TEXT NOT NULL,
+      caption      TEXT,
+      sort_order   INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL,
+      created_by   TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_erm_event_sort
+      ON event_recap_media(event_id, sort_order);
+  `);
+
+  // ─── Settings V2 — Team: track last successful login per user ─────────────
+  // Drives the "Active" vs "Pending" status pills on the Team section:
+  //   • last_login_at IS NULL  → user never signed in → "Pending" (invited)
+  //   • last_login_at > 0      → "Active"
+  // Set by the OTP / PIN verify paths in lib/auth.ts via touchLastLogin().
+  // Additive + idempotent — column may already exist from a previous boot.
+  const userCols = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
+  if (!userCols.some((c) => c.name === 'last_login_at')) {
+    db.exec('ALTER TABLE users ADD COLUMN last_login_at INTEGER');
+  }
 }
 
 export function getConfig(key: string, fallback = ''): string {

@@ -4,11 +4,19 @@ import { useEffect } from 'react';
 
 /**
  * Global affiliate-ref capture. Runs on mount, then again whenever the
- * URL changes (App Router pushState). Reads ?ref=CODE from the URL,
- * stores it in a 30-day cookie + localStorage, and fires a one-time
- * click to /api/affiliate/click.
+ * URL changes (App Router pushState). Reads ?ref=CODE OR ?t=CODE from
+ * the URL (both are aliases for the same attribution slot), stores it
+ * in a 30-day cookie + localStorage, and fires a one-time click to
+ * /api/affiliate/click.
  *
- * Last-click attribution: a new ?ref= ALWAYS overwrites the previous
+ * ?t= is the canonical URL form for per-event Tracking Links (the
+ * non-commission Promote tab); ?ref= is the original commission-affiliate
+ * form. Both flow through the same cookie (single attribution slot —
+ * last-touch wins) and the same backend lookup via getAffiliateByCode().
+ * If BOTH appear on the same URL, ?t= wins because it's the more
+ * specific channel-attribution param.
+ *
+ * Last-click attribution: a new ?ref=/?t= ALWAYS overwrites the previous
  * cookie within the 30-day window.
  *
  * Mounted once globally from src/app/layout.tsx.
@@ -46,7 +54,12 @@ function captureFromUrl() {
   } catch {
     return;
   }
-  const code = normalizeCode(params.get('ref'));
+  // ?t= (Tracking Link) takes priority over ?ref= when both are present —
+  // it's the more specific channel-attribution param surfaced by the
+  // per-event Promote page. Falls back to ?ref= for legacy commission
+  // affiliate URLs. Both write into the same cookie slot — last touch
+  // wins exactly the same way regardless of which param was used.
+  const code = normalizeCode(params.get('t')) || normalizeCode(params.get('ref'));
   if (!code) return;
 
   // Always overwrite cookie + storage — last-click rule

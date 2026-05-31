@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getEvent, updateEvent, deleteEvent } from '@/lib/events';
+import type { TicketDesign } from '@/lib/ticket-design';
 import { validatePaxRules, validateBookingTypes } from '@/lib/events-validators';
 import { requireRole } from '@/lib/auth';
 
@@ -26,10 +27,38 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   // Strings (nullable copy semantics — pass null to clear)
   for (const k of [
     'name', 'event_date', 'status', 'cover_policy', 'notes',
-    'description', 'image_data', 'start_time', 'venue_id',
+    'description', 'image_data', 'card_image', 'start_time', 'venue_id',
     'genre', 'terms', 'faqs',
+    'slug', 'meta_pixel_id',
+    'refund_policy', 'one_line_summary',
+    'invite_message',
+    // Per-event Settings — Inquiry contact phone override.
+    'inquiry_phone',
   ]) {
     if (k in body) patch[k] = body[k];
+  }
+
+  // ─── Per-event Settings — fee payer enums + GST master toggle ──────────
+  // Enum gate: only accept the two known values, otherwise drop the patch
+  // entirely (keeps DB DEFAULT 'host' intact). gst_enabled is a boolean
+  // master toggle separate from the gst_percent number above.
+  if (body.payment_gateway_fee_payer === 'customer' || body.payment_gateway_fee_payer === 'host') {
+    patch.payment_gateway_fee_payer = body.payment_gateway_fee_payer;
+  }
+  if (body.platform_fee_payer === 'customer' || body.platform_fee_payer === 'host') {
+    patch.platform_fee_payer = body.platform_fee_payer;
+  }
+  if ('gst_enabled' in body) patch.gst_enabled = !!body.gst_enabled;
+
+  // Phase 3 — invite-only access mode. Enum; ignore anything else.
+  // The wizard's "Rotate link" button sends { rotate_invite_secret: true }
+  // alongside (or separately from) access_mode; the events lib handles
+  // minting on first switch to 'invite_link' and rotation when asked.
+  if (body.access_mode === 'public' || body.access_mode === 'invite_link' || body.access_mode === 'phone_list') {
+    patch.access_mode = body.access_mode;
+  }
+  if (body.rotate_invite_secret === true) {
+    patch.rotate_invite_secret = true;
   }
 
   // Numbers
@@ -45,6 +74,21 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   if ('is_public' in body) patch.is_public = !!body.is_public;
   if ('entry_enabled' in body) patch.entry_enabled = !!body.entry_enabled;
   if ('cover_enabled' in body) patch.cover_enabled = !!body.cover_enabled;
+
+  // Seating layout — accept the toggle booleans here so the wizard's
+  // buildFullPayload can flip the feature on/off in one save. The SVG
+  // itself is forbidden via this endpoint — callers MUST use
+  // /api/events/[id]/seating-layout so sanitization stays centralised.
+  if ('seating_layout_svg' in body) {
+    return NextResponse.json(
+      { ok: false, message: 'Use /api/events/[id]/seating-layout to update the venue SVG.' },
+      { status: 400 },
+    );
+  }
+  if ('seating_layout_enabled' in body) patch.seating_layout_enabled = !!body.seating_layout_enabled;
+  if ('seating_layout_phases_enabled' in body) {
+    patch.seating_layout_phases_enabled = !!body.seating_layout_phases_enabled;
+  }
 
   // Occupancy rule (enum)
   if (body.occupancy_rule === 'exact' || body.occupancy_rule === 'min') {
@@ -116,6 +160,31 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   }
   if ('messages_config' in body && body.messages_config && typeof body.messages_config === 'object') {
     patch.messages_config = body.messages_config;
+  }
+
+  // ─── Phase 4: RSVP Form ────────────────────────────────────────────────
+  // Wizard sends the whole FieldDef[] on every save. updateEvent runs it
+  // through parseRsvpFields() so unknown types are dropped and ids are
+  // minted for any new entries — no need to over-validate here.
+  if ('rsvp_fields' in body) {
+    if (Array.isArray(body.rsvp_fields)) {
+      patch.rsvp_fields = body.rsvp_fields;
+    } else if (body.rsvp_fields === null) {
+      patch.rsvp_fields = [];
+    }
+  }
+
+  // ─── Phase 4: Ticket Design ────────────────────────────────────────────
+  // Wizard sends the whole design blob on every save via buildFullPayload.
+  // updateEvent runs it through parseTicketDesign() so unknown fields are
+  // dropped and invalid hex colors snap back to defaults — no extra
+  // validation needed here. Passing null resets to defaults.
+  if ('ticket_design' in body) {
+    if (body.ticket_design === null) {
+      patch.ticket_design = null;
+    } else if (body.ticket_design && typeof body.ticket_design === 'object') {
+      patch.ticket_design = body.ticket_design as Partial<TicketDesign>;
+    }
   }
 
   const event = updateEvent(id, patch);

@@ -13,6 +13,10 @@ interface Props {
   maxRawBytes?: number;
   label?: string;
   helperText?: string;
+  /** CSS aspect ratio for the drop tile (e.g. '1 / 1', '2 / 3'). Default '1 / 1'. */
+  aspectRatio?: string;
+  /** Max tile width in px. Default 220. Bump for hero shots. */
+  maxWidth?: number;
 }
 
 /**
@@ -34,6 +38,8 @@ export function ImageUpload({
   maxRawBytes = 10 * 1024 * 1024,
   label = 'Artist image',
   helperText = 'PNG or JPG. Auto-resized to 800×800. Max 10 MB source.',
+  aspectRatio = '1 / 1',
+  maxWidth = 220,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
@@ -78,7 +84,7 @@ export function ImageUpload({
         className={`relative rounded-xl border-2 border-dashed transition cursor-pointer overflow-hidden ${
           dragOver ? 'border-brand-400 bg-brand-50/50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'
         } ${value ? 'cursor-default' : ''}`}
-        style={{ aspectRatio: '1 / 1', maxWidth: 220 }}
+        style={{ aspectRatio, maxWidth }}
       >
         {value ? (
           // eslint-disable-next-line @next/next/no-img-element

@@ -59,6 +59,9 @@ export function StepBookings({ state, onChange }: Props) {
 
   return (
     <div className="space-y-6">
+      {/* Payment mode — what (if anything) the customer pays online */}
+      <PaymentSection state={state} onChange={onChange} />
+
       {/* Entry fee */}
       <Section
         title="Entry Fee"
@@ -254,6 +257,131 @@ function VisibilityBadge({ value }: { value: NonNullable<TableType['visibility']
     <span className={`text-[10px] font-medium uppercase tracking-wider px-2 py-0.5 rounded-full border ${cls}`}>
       {meta.label}
     </span>
+  );
+}
+
+// ─── Payment section ───────────────────────────────────────────────────────
+// Three modes: none (default), deposit (fixed amount), full_cover (entry+cover).
+// Hides the deposit-amount input unless mode === 'deposit'.
+
+function PaymentSection({
+  state, onChange,
+}: { state: WizardState; onChange: (patch: Partial<WizardState>) => void }) {
+  const mode = state.payment_mode;
+  const showHelperWarning = mode !== 'none';
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-5">
+      <div className="font-semibold text-slate-900">Payment</div>
+      <p className="text-xs text-slate-500 mt-1">
+        How much does the customer pay online when booking from the public event page?
+      </p>
+
+      <div className="mt-4 space-y-2">
+        <PaymentOption
+          value="none"
+          current={mode}
+          onSelect={(v) => onChange({ payment_mode: v })}
+          title="None"
+          description="Customer pays nothing online. Reservation is just a notification; staff collects everything at the door."
+        />
+        <PaymentOption
+          value="deposit"
+          current={mode}
+          onSelect={(v) => onChange({ payment_mode: v })}
+          title="Deposit"
+          description="Customer pays a fixed deposit to lock in their booking. Balance + cover collected at the door."
+        >
+          {mode === 'deposit' && (
+            <div className="mt-3 max-w-xs">
+              <label className="label">Deposit amount (₹)</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">₹</span>
+                <input
+                  className="input pl-8"
+                  type="number"
+                  min={0}
+                  step="50"
+                  value={state.deposit_amount}
+                  onChange={(e) => onChange({ deposit_amount: Math.max(0, Number(e.target.value) || 0) })}
+                />
+              </div>
+            </div>
+          )}
+        </PaymentOption>
+        <PaymentOption
+          value="full_cover"
+          current={mode}
+          onSelect={(v) => onChange({ payment_mode: v })}
+          title="Full cover"
+          description="Customer pays the entry fee + cover upfront. Wallet auto-issued + WhatsApp pass sent on payment success. Door staff just scans."
+        />
+      </div>
+
+      {showHelperWarning && (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 leading-relaxed">
+          <strong>Razorpay must be configured</strong> in{' '}
+          <a href="/admin/settings/razorpay" target="_blank" rel="noopener" className="underline font-medium">
+            Settings → Razorpay
+          </a>{' '}
+          for payments to work. If a customer hits this event before Razorpay is configured, they'll
+          see a "payments unavailable" error from the backend and the booking won't complete.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PaymentOption({
+  value, current, onSelect, title, description, children,
+}: {
+  value: WizardState['payment_mode'];
+  current: WizardState['payment_mode'];
+  onSelect: (v: WizardState['payment_mode']) => void;
+  title: string;
+  description: string;
+  children?: React.ReactNode;
+}) {
+  const active = current === value;
+  // We use a div + role="radio" (rather than a <button>) so we can safely
+  // render an <input> inside it when expanded (deposit amount) — nested
+  // buttons / inputs-inside-buttons would be invalid HTML.
+  return (
+    <div
+      role="radio"
+      tabIndex={0}
+      aria-checked={active}
+      onClick={() => onSelect(value)}
+      onKeyDown={(e) => {
+        if (e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault();
+          onSelect(value);
+        }
+      }}
+      className={`w-full cursor-pointer rounded-lg border px-3 py-2.5 transition ${
+        active
+          ? 'border-brand-500 bg-brand-50/60'
+          : 'border-slate-200 bg-white hover:border-slate-300'
+      }`}
+    >
+      <div className="flex items-start gap-2.5">
+        <div className={`mt-0.5 w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${active ? 'border-brand-500' : 'border-slate-300'}`}>
+          {active && <div className="w-1.5 h-1.5 bg-brand-500 rounded-full" />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium text-slate-900">{title}</div>
+          <div className="mt-0.5 text-[11px] text-slate-500 leading-snug">{description}</div>
+          {/* Children render inside the radio's content area — clicks on the
+              input shouldn't re-select the radio (it's already selected, so
+              this is a no-op, but we still stop propagation to be safe). */}
+          {children && (
+            <div onClick={(e) => e.stopPropagation()}>
+              {children}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

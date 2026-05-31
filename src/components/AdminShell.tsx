@@ -15,9 +15,28 @@ const ROLES_CASHIER: UserRole[] = ['host', 'manager', 'cashier'];
 
 const NAV: NavSection[] = [
   {
+    // Primary group — everything tied to an event's customer-facing lifecycle:
+    // setting up events, bookings/reservations landing in, table assignments,
+    // and recovering customers who started a booking but never finished.
+    section: 'Events',
+    items: [
+      { href: '/admin',                    label: 'Events',             icon: <IconCalendar />,  roles: ROLES_MGMT },
+      { href: '/admin/reservations',       label: 'Reservations',       icon: <IconInbox />,     roles: ROLES_MGMT },
+      { href: '/admin/tables',             label: 'Tables',             icon: <IconGrid />,      roles: ROLES_MGMT },
+      { href: '/admin/abandoned-bookings', label: 'Abandoned Bookings', icon: (
+        // Inline SVG — defined inline (vs a top-level Icon helper) to avoid a
+        // Fast Refresh TDZ when adding new icons mid-session.
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
+          <path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/>
+          <path d="M16 8l4 4M20 8l-4 4"/>
+        </svg>
+      ), roles: ROLES_MGMT },
+    ],
+  },
+  {
     section: 'Overview',
     items: [
-      { href: '/admin',         label: 'Events',            icon: <IconCalendar />, roles: ROLES_MGMT },
       { href: '/admin/analytics', label: 'Analytics',       icon: <IconChart />,    roles: ROLES_CASHIER },
     ],
   },
@@ -35,11 +54,10 @@ const NAV: NavSection[] = [
       { href: '/admin/tickets-status',    label: 'Offline Tickets Status',  icon: <IconList />,   roles: ROLES_MGMT },
       { href: '/admin/cashier',           label: 'Cashier',                 icon: <IconCash />,   roles: ROLES_CASHIER },
       { href: '/admin/issue',             label: 'Issue Cover',             icon: <IconPlus />,   roles: ['host', 'manager', 'entry'] },
+      { href: '/admin/scan',              label: 'Scan',                    icon: <IconScanQR />, roles: ['host', 'manager', 'captain', 'entry', 'cashier'] },
       { href: '/admin/redeem',            label: 'Redeem Cover',            icon: <IconScan />,   roles: ['host', 'manager', 'captain'] },
       { href: '/admin/history',           label: 'History',                 icon: <IconClock />,  roles: ROLES_CASHIER },
       { href: '/admin/cover',             label: 'Cover',                   icon: <IconShield />, roles: ROLES_MGMT },
-      { href: '/admin/reservations',      label: 'Reservations',            icon: <IconInbox />,  roles: ROLES_MGMT },
-      { href: '/admin/tables',            label: 'Tables',                  icon: <IconGrid />,   roles: ROLES_MGMT },
       { href: '/admin/people',            label: 'People',                  icon: <IconUsers />,  roles: ROLES_MGMT },
     ],
   },
@@ -67,10 +85,17 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  /**
+   * Desktop sidebar lives in an auto-hide ("mini rail") mode: 56px collapsed,
+   * 256px expanded on hover. We track hover state explicitly (rather than
+   * just CSS :hover) so we can also expand programmatically — e.g. brief
+   * peek on route change. Mobile uses `open` (slide-in) instead.
+   */
+  const [hovered, setHovered] = useState(false);
   const [me, setMe] = useState<Me | null>(null);
   const [branding, setBranding] = useState<Branding>({ venueName: 'EventCover', venueLogo: '' });
 
-  useEffect(() => { setOpen(false); }, [pathname]);
+  useEffect(() => { setOpen(false); setHovered(false); }, [pathname]);
 
   useEffect(() => {
     fetch('/api/auth/me').then((r) => {
@@ -126,11 +151,18 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
 
       {open && <div className="md:hidden fixed inset-0 z-40 bg-black/40" onClick={() => setOpen(false)} />}
 
-      {/* Sidebar */}
+      {/* Sidebar — auto-hide on desktop (56px rail → 256px on hover) */}
       <aside
-        className={`fixed md:sticky top-0 left-0 z-50 md:z-0 h-screen w-64 shrink-0
-                    bg-[#FAFAF7] border-r border-slate-200 overflow-y-auto
-                    transition-transform md:translate-x-0 flex flex-col
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        aria-expanded={hovered}
+        className={`fixed md:sticky top-0 left-0 z-50 h-screen shrink-0
+                    bg-[#FAFAF7] border-r border-slate-200 overflow-x-hidden overflow-y-auto
+                    transition-[width,transform] duration-200 ease-out
+                    flex flex-col
+                    w-64 md:w-14
+                    ${hovered ? 'md:w-64 md:shadow-xl' : ''}
+                    md:translate-x-0
                     ${open ? 'translate-x-0' : '-translate-x-full'}`}
         style={{
           paddingTop: 'env(safe-area-inset-top)',
@@ -138,9 +170,13 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         }}
       >
         {/* Brand */}
-        <div className="px-5 py-5 flex items-center gap-2 border-b border-slate-200">
+        <div className="px-3 md:px-3 py-5 flex items-center gap-2 border-b border-slate-200 min-h-[68px]">
           <BrandMark logo={branding.venueLogo} venueName={branding.venueName} />
-          <div className="flex-1 min-w-0">
+          <div
+            className={`flex-1 min-w-0 transition-opacity duration-150
+                        ${hovered ? 'md:opacity-100' : 'md:opacity-0 md:pointer-events-none'}
+                        opacity-100`}
+          >
             <div className="text-[10px] tracking-[0.25em] uppercase text-slate-500 leading-none truncate">
               {branding.venueName || 'Akan'}
             </div>
@@ -157,8 +193,13 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             const visible = me ? section.items.filter((it) => it.roles.includes(me.role)) : [];
             if (visible.length === 0) return null;
             return (
-              <div key={section.section} className="mb-3 px-3">
-                <div className="px-3 pt-2 pb-1.5 text-[9px] tracking-[0.18em] uppercase text-slate-400 font-medium">
+              <div key={section.section} className="mb-3 px-3 md:px-2">
+                <div
+                  className={`px-3 pt-2 pb-1.5 text-[9px] tracking-[0.18em] uppercase text-slate-400 font-medium
+                              transition-opacity duration-150 truncate
+                              ${hovered ? 'md:opacity-100' : 'md:opacity-0'}
+                              opacity-100`}
+                >
                   {section.section}
                 </div>
                 <ul className="space-y-0.5">
@@ -168,16 +209,23 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                       <li key={item.href}>
                         <Link
                           href={item.href}
-                          className={`flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] transition ${
+                          title={item.label}
+                          className={`flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] transition whitespace-nowrap ${
                             active
                               ? 'bg-brand-100 text-brand-700 font-semibold'
                               : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                           }`}
                         >
-                          <span className={`w-4 h-4 inline-flex items-center justify-center ${active ? 'text-brand-600' : 'text-slate-400'}`}>
+                          <span className={`w-4 h-4 inline-flex items-center justify-center flex-shrink-0 ${active ? 'text-brand-600' : 'text-slate-400'}`}>
                             {item.icon}
                           </span>
-                          <span className="truncate">{item.label}</span>
+                          <span
+                            className={`truncate transition-opacity duration-150
+                                        ${hovered ? 'md:opacity-100' : 'md:opacity-0'}
+                                        opacity-100`}
+                          >
+                            {item.label}
+                          </span>
                         </Link>
                       </li>
                     );
@@ -190,10 +238,14 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
 
         {/* User pill */}
         {me && (
-          <div className="px-3 pb-4 pt-2 border-t border-slate-200">
+          <div className="px-3 md:px-2 pb-4 pt-2 border-t border-slate-200">
             <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg bg-white border border-slate-200">
               <Avatar name={me.name} />
-              <div className="flex-1 min-w-0">
+              <div
+                className={`flex-1 min-w-0 transition-opacity duration-150
+                            ${hovered ? 'md:opacity-100' : 'md:opacity-0 md:pointer-events-none'}
+                            opacity-100`}
+              >
                 <div className="text-xs font-semibold text-slate-900 truncate flex items-center gap-1">
                   {me.name}
                   <VerifiedBadge />
@@ -202,7 +254,13 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                   {me.email || me.phone}
                 </div>
               </div>
-              <button onClick={logout} className="text-slate-400 hover:text-slate-900 p-1" aria-label="Sign out">
+              <button
+                onClick={logout}
+                className={`text-slate-400 hover:text-slate-900 p-1 transition-opacity duration-150
+                            ${hovered ? 'md:opacity-100' : 'md:opacity-0 md:pointer-events-none'}
+                            opacity-100`}
+                aria-label="Sign out"
+              >
                 <IconOut />
               </button>
             </div>
@@ -303,6 +361,7 @@ function IconChart()    { return svg(<><path d="M3 3v18h18"/><path d="M7 14l4-4 
 function IconUsers()    { return svg(<><circle cx="9" cy="8" r="4"/><path d="M17 11a3 3 0 1 0-3-3"/><path d="M2 21v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></>); }
 function IconPlus()     { return svg(<><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></>); }
 function IconScan()     { return svg(<><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M21 7V5a2 2 0 0 0-2-2h-2"/><path d="M3 17v2a2 2 0 0 0 2 2h2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 12h10"/></>); }
+function IconScanQR()   { return svg(<><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M21 7V5a2 2 0 0 0-2-2h-2"/><path d="M3 17v2a2 2 0 0 0 2 2h2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><rect x="8" y="8" width="3" height="3"/><rect x="13" y="8" width="3" height="3"/><rect x="8" y="13" width="3" height="3"/><path d="M13 13h3v3"/></>); }
 function IconCash()     { return svg(<><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/></>); }
 function IconGrid()     { return svg(<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>); }
 function IconTicket()   { return svg(<><path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4z"/><path d="M13 6v12"/></>); }

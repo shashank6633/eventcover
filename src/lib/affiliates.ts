@@ -4,6 +4,7 @@ import { logAudit } from './audit';
 import { normalizePhone } from './users';
 
 export type AffiliateStatus = 'active' | 'suspended';
+export type AffiliateKind = 'commission' | 'tracking';
 export type CommissionType = 'percent' | 'flat';
 export type CommissionStatus = 'pending' | 'approved' | 'paid' | 'reversed';
 export type PayoutMethod = 'cash' | 'upi' | 'bank';
@@ -15,6 +16,7 @@ export interface AffiliateRow {
   phone: string | null;
   email: string | null;
   status: AffiliateStatus;
+  kind: AffiliateKind;
   commission_type: CommissionType;
   commission_value: number;
   notes: string | null;
@@ -120,11 +122,38 @@ function ensureUniqueCode(seed: string): string {
 
 // ─── CRUD ──────────────────────────────────────────────────────────────────
 
-export function listAffiliates(): Affiliate[] {
+export interface ListAffiliatesFilter {
+  kind?: AffiliateKind;
+  /** Scope to affiliates assigned to a specific event (via affiliate_event_assignments). */
+  eventId?: string;
+}
+
+export function listAffiliates(filter?: ListAffiliatesFilter): Affiliate[] {
   const db = getDb();
-  return db
-    .prepare('SELECT * FROM affiliates ORDER BY status ASC, created_at DESC')
-    .all() as AffiliateRow[];
+  if (!filter || (!filter.kind && !filter.eventId)) {
+    return db
+      .prepare('SELECT * FROM affiliates ORDER BY status ASC, created_at DESC')
+      .all() as AffiliateRow[];
+  }
+  const where: string[] = [];
+  const params: (string)[] = [];
+  if (filter.kind) {
+    where.push('a.kind = ?');
+    params.push(filter.kind);
+  }
+  if (filter.eventId) {
+    where.push(`EXISTS (
+      SELECT 1 FROM affiliate_event_assignments ea
+      WHERE ea.affiliate_id = a.id AND ea.event_id = ?
+    )`);
+    params.push(filter.eventId);
+  }
+  const sql = `
+    SELECT a.* FROM affiliates a
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY a.status ASC, a.created_at DESC
+  `;
+  return db.prepare(sql).all(...params) as AffiliateRow[];
 }
 
 export function getAffiliate(id: string): Affiliate | null {
@@ -149,6 +178,11 @@ export interface CreateAffiliateInput {
   phone?: string | null;
   email?: string | null;
   code?: string | null; // explicit override; otherwise derived from name
+  /**
+   * 'commission' (default) — earns commission via attributeTicket().
+   * 'tracking' — channel attribution only; commission_value is forced to 0.
+   */
+  kind?: AffiliateKind;
   commissionType: CommissionType;
   commissionValue: number;
   notes?: string | null;
@@ -159,6 +193,7 @@ export interface CreateAffiliateInput {
 
 export function createAffiliate(input: CreateAffiliateInput): Affiliate {
   if (!input.name?.trim()) throw new Error('Name is required.');
+  const kind: AffiliateKind = input.kind === 'tracking' ? 'tracking' : 'commission';
   if (!['percent', 'flat'].includes(input.commissionType)) {
     throw new Error('Commission type must be "percent" or "flat".');
   }
@@ -168,6 +203,8 @@ export function createAffiliate(input: CreateAffiliateInput): Affiliate {
   if (input.commissionType === 'percent' && input.commissionValue > 100) {
     throw new Error('Percent commission cannot exceed 100.');
   }
+  // Tracking links never earn commission — force value to 0 regardless of caller.
+  const commissionValue = kind === 'tracking' ? 0 : input.commissionValue;
 
   const db = getDb();
   const id = nanoid();
@@ -178,17 +215,18 @@ export function createAffiliate(input: CreateAffiliateInput): Affiliate {
   const tx = db.transaction(() => {
     db.prepare(`
       INSERT INTO affiliates (
-        id, code, name, phone, email, status, commission_type, commission_value,
+        id, code, name, phone, email, status, kind, commission_type, commission_value,
         notes, created_at, created_by, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       code,
       input.name.trim(),
       phone || null,
       input.email?.trim() || null,
+      kind,
       input.commissionType,
-      input.commissionValue,
+      commissionValue,
       input.notes?.trim() || null,
       now,
       input.createdBy,
@@ -219,14 +257,15 @@ export function createAffiliate(input: CreateAffiliateInput): Affiliate {
 
   logAudit({
     actor: input.createdBy,
-    action: 'affiliate_create',
+    action: kind === 'tracking' ? 'tracking_link_create' : 'affiliate_create',
     entityType: 'affiliate',
     entityId: id,
     details: {
       code,
       name: input.name,
+      kind,
       commission_type: input.commissionType,
-      commission_value: input.commissionValue,
+      commission_value: commissionValue,
       event_count: input.eventAssignments?.length ?? 0,
     },
   });
@@ -400,35 +439,47 @@ export function attributeTicket(input: AttributeTicketInput): {
       input.saleAmount,
       input.pax,
     );
-    if (commission <= 0) return null;
+
+    // Tracking links (kind='tracking', commission_value=0) still stamp the
+    // ticket so per-event Promote stats can count sales / revenue against
+    // the source — they just don't open a commission row.
+    const isTrackingOnly = aff.kind === 'tracking' || commission <= 0;
 
     const id = nanoid();
     const now = Date.now();
 
     const tx = db.transaction(() => {
-      db.prepare(`
-        INSERT INTO affiliate_commissions (
-          id, ticket_id, affiliate_id, event_id, sale_amount,
-          commission_type, commission_value, commission_amount,
-          status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-      `).run(
-        id,
-        input.ticketId,
-        aff.id,
-        input.eventId,
-        input.saleAmount,
-        effectiveType,
-        effectiveValue,
-        commission,
-        now,
-      );
+      if (!isTrackingOnly) {
+        db.prepare(`
+          INSERT INTO affiliate_commissions (
+            id, ticket_id, affiliate_id, event_id, sale_amount,
+            commission_type, commission_value, commission_amount,
+            status, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        `).run(
+          id,
+          input.ticketId,
+          aff.id,
+          input.eventId,
+          input.saleAmount,
+          effectiveType,
+          effectiveValue,
+          commission,
+          now,
+        );
+      }
 
       db.prepare(`
         UPDATE tickets
-        SET affiliate_code = ?, affiliate_id = ?, commission_amount = ?, commission_status = 'pending'
+        SET affiliate_code = ?, affiliate_id = ?, commission_amount = ?, commission_status = ?
         WHERE id = ?
-      `).run(aff.code, aff.id, commission, input.ticketId);
+      `).run(
+        aff.code,
+        aff.id,
+        isTrackingOnly ? 0 : commission,
+        isTrackingOnly ? 'none' : 'pending',
+        input.ticketId,
+      );
     });
     tx();
 
@@ -814,4 +865,141 @@ export function listTicketsForAffiliateEvent(
     WHERE t.affiliate_id = ? AND t.event_id = ?
     ORDER BY t.created_at DESC
   `).all(affiliateId, eventId) as AffiliateTicketRow[];
+}
+
+// ─── Per-event Promote helpers ────────────────────────────────────────────
+
+/**
+ * Convenience wrapper: create a tracking-link affiliate (kind='tracking',
+ * commission_value=0) AND assign it to the target event in one atomic call.
+ * Throws if the name collides with an existing tracking link already
+ * scoped to this event so the operator gets a clean 409 instead of a
+ * silently-suffixed code.
+ */
+export function createTrackingLink(input: {
+  eventId: string;
+  name: string;
+  notes?: string | null;
+  createdBy: string;
+}): Affiliate {
+  if (!input.eventId) throw new Error('Event id is required.');
+  const cleaned = input.name?.trim().toLowerCase() || '';
+  if (!/^[a-z0-9-]{2,32}$/.test(cleaned)) {
+    throw new Error('Name must be 2–32 chars, lowercase letters / digits / dashes only.');
+  }
+
+  // Collision guard — same display name on the same event for tracking links.
+  const db = getDb();
+  const dup = db.prepare(`
+    SELECT a.id FROM affiliates a
+    JOIN affiliate_event_assignments ea ON ea.affiliate_id = a.id
+    WHERE a.kind = 'tracking' AND LOWER(a.name) = ? AND ea.event_id = ?
+    LIMIT 1
+  `).get(cleaned, input.eventId);
+  if (dup) {
+    const err = new Error('A tracking link with that name already exists for this event.');
+    (err as Error & { status?: number }).status = 409;
+    throw err;
+  }
+
+  return createAffiliate({
+    name: cleaned,
+    kind: 'tracking',
+    commissionType: 'percent',
+    commissionValue: 0,
+    notes: input.notes ?? null,
+    createdBy: input.createdBy,
+    eventAssignments: [{ eventId: input.eventId }],
+  });
+}
+
+/**
+ * Hard-delete an affiliate row. FK ON DELETE CASCADE drops affiliate_clicks
+ * + affiliate_event_assignments rows. Tracking-only deletes are safe because
+ * tracking links never accrue commissions or payouts. For commission
+ * affiliates this WILL cascade clicks but won't touch commissions / payouts
+ * (those FK to affiliates without ON DELETE CASCADE — SQLite will refuse the
+ * delete instead). Callers wanting to "remove a commission affiliate from
+ * this event" should use unassignEvent() instead.
+ */
+export function deleteAffiliate(id: string, actor: string): boolean {
+  const db = getDb();
+  const existing = getAffiliate(id);
+  if (!existing) return false;
+  const res = db.prepare('DELETE FROM affiliates WHERE id = ?').run(id);
+  if (res.changes > 0) {
+    logAudit({
+      actor,
+      action: existing.kind === 'tracking' ? 'tracking_link_delete' : 'affiliate_delete',
+      entityType: 'affiliate',
+      entityId: id,
+      details: { code: existing.code, name: existing.name, kind: existing.kind },
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Per-event Promote stats — aggregates clicks, tickets sold, sale revenue,
+ * conversion %, last_sale_at for an affiliate scoped to a single event.
+ *
+ * Works equally well for tracking links and commission affiliates because
+ * attributeTicket() stamps tickets.affiliate_id for BOTH kinds. Pure read,
+ * cheap (3 simple counts), no commission JOIN required so tracking links
+ * — which never insert into affiliate_commissions — still produce numbers.
+ */
+export interface PromoteLinkStats {
+  clicks: number;
+  sales: number;            // ticket COUNT
+  revenue: number;          // SUM(price * pax) for issued tickets
+  conversion_rate: number;  // sales / clicks (0..1)
+  last_sale_at: number | null;
+}
+
+export function getEventPromoteStats(affiliateId: string, eventId: string): PromoteLinkStats {
+  const db = getDb();
+  const clicks =
+    (db.prepare('SELECT COUNT(*) AS c FROM affiliate_clicks WHERE affiliate_id = ? AND event_id = ?')
+      .get(affiliateId, eventId) as { c: number }).c;
+
+  // Match attribution path: tickets stamped with this affiliate_id + event_id.
+  const ticketAgg = db.prepare(`
+    SELECT
+      COUNT(*)                                                AS sales,
+      COALESCE(SUM(price * pax), 0)                           AS revenue,
+      MAX(created_at)                                         AS last_sale_at
+    FROM tickets
+    WHERE affiliate_id = ? AND event_id = ? AND status = 'issued'
+  `).get(affiliateId, eventId) as { sales: number; revenue: number; last_sale_at: number | null };
+
+  return {
+    clicks,
+    sales: ticketAgg.sales,
+    revenue: ticketAgg.revenue,
+    conversion_rate: clicks > 0 ? ticketAgg.sales / clicks : 0,
+    last_sale_at: ticketAgg.last_sale_at ?? null,
+  };
+}
+
+export interface EventPromoteLink extends Affiliate {
+  stats: PromoteLinkStats;
+}
+
+/**
+ * Tracking links (commission-free) scoped to an event. Used by the
+ * Promote page's "Tracking Links" tab.
+ */
+export function getEventTrackingLinks(eventId: string): EventPromoteLink[] {
+  const links = listAffiliates({ eventId, kind: 'tracking' });
+  return links.map((a) => ({ ...a, stats: getEventPromoteStats(a.id, eventId) }));
+}
+
+/**
+ * Commission affiliates scoped to an event. Used by the Promote page's
+ * "Affiliate Links" tab.
+ */
+export function getEventAffiliateLinks(eventId: string): EventPromoteLink[] {
+  const links = listAffiliates({ eventId, kind: 'commission' });
+  return links.map((a) => ({ ...a, stats: getEventPromoteStats(a.id, eventId) }));
 }

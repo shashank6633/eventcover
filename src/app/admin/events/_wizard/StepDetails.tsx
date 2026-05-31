@@ -234,6 +234,51 @@ export function StepDetails({ state, onChange }: Props) {
             </div>
           </div>
         </div>
+
+        {/* Marketing / ads section — only meaningful for public events */}
+        {state.is_public && (
+          <div className="pt-2 border-t border-slate-100">
+            <div className="text-[11px] uppercase tracking-widest text-slate-500 mb-1">
+              Marketing &amp; ads
+            </div>
+            <div className="text-xs text-slate-500 mb-3">
+              Optional overrides for this event&apos;s public landing page at{' '}
+              <code className="text-[11px] bg-slate-100 px-1 py-0.5 rounded">/event/[slug]</code>.
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="label">Public URL slug</label>
+                <input
+                  className="input font-mono text-sm"
+                  value={state.slug}
+                  onChange={(e) => onChange({ slug: e.target.value })}
+                  placeholder="auto · threeory-band-2026-05-30"
+                />
+                <div className="text-[10px] text-slate-400 mt-1">
+                  Leave blank to auto-generate from title + date.
+                </div>
+              </div>
+              <div>
+                <label className="label">Meta Pixel ID override</label>
+                <input
+                  className="input font-mono text-sm"
+                  value={state.meta_pixel_id}
+                  onChange={(e) => onChange({ meta_pixel_id: e.target.value.replace(/\D/g, '') })}
+                  placeholder="uses venue default"
+                  inputMode="numeric"
+                  maxLength={17}
+                />
+                <div className="text-[10px] text-slate-400 mt-1">
+                  Blank = use venue-wide Pixel from{' '}
+                  <a href="/admin/settings/meta" target="_blank" className="text-brand-600 underline">
+                    Settings → Meta
+                  </a>.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { PWAInit } from '@/components/PWAInit';
 import { RefCapture } from '@/components/RefCapture';
+import { MetaPixelCapture } from '@/components/MetaPixelCapture';
 
 export const metadata: Metadata = {
   title: {
@@ -41,6 +42,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {children}
         <PWAInit />
         <RefCapture />
+        <MetaPixelCapture />
       </body>
     </html>
   );

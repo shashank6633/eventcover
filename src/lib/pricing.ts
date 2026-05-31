@@ -385,3 +385,7 @@ export function pricingFromEvent(event: {
     discount_percent: nnf(event.discount_percent),
   };
 }
+
+// NOTE: Per-event fee/GST calculation (gateway + platform + GST overlay) lives
+// in src/lib/pricing-calculator.ts → computeBilling(). Keep this module focused
+// on the line-item math (entry, cover, table occupancy, discount, GST rate).

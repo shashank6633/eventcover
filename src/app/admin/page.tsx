@@ -4,6 +4,15 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { Event } from '@/lib/events';
+import { formatCompactINR } from '@/lib/format';
+
+interface KpiSnapshot {
+  totalCustomers: number;
+  totalIncoming: number;
+  totalCoverCharge: number;
+  amountIssued: number;
+  totalRedeems: number;
+}
 
 type Filter = 'published' | 'today' | 'all' | 'upcoming' | 'past' | 'draft';
 
@@ -22,11 +31,33 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>('published');
   const [query, setQuery] = useState('');
+  const [kpis, setKpis] = useState<KpiSnapshot | null>(null);
+  const [kpisLoading, setKpisLoading] = useState(true);
 
   useEffect(() => {
     fetch('/api/events', { cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => { if (d.ok) setEvents(d.events || []); setLoading(false); });
+  }, []);
+
+  // Hub at-a-glance widget — fire-and-forget, doesn't block the events list.
+  // 403/401 (e.g. cashier-only or logged-out) silently leaves the widget hidden.
+  useEffect(() => {
+    fetch('/api/analytics/kpis?from=last7d', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.ok && d.range) {
+          setKpis({
+            totalCustomers: d.range.totalCustomers ?? 0,
+            totalIncoming: d.range.totalIncoming ?? 0,
+            totalCoverCharge: d.range.totalCoverCharge ?? 0,
+            amountIssued: d.range.amountIssued ?? 0,
+            totalRedeems: d.range.totalRedeems ?? 0,
+          });
+        }
+        setKpisLoading(false);
+      })
+      .catch(() => setKpisLoading(false));
   }, []);
 
   const filtered = useMemo(() => {
@@ -51,6 +82,10 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-6xl mx-auto px-6 md:px-8 py-6">
+      {/* Last 7 days at a glance — top KPIs pulled from /api/analytics/kpis.
+          Silently hidden if the role isn't allowed (e.g. captain / entry). */}
+      <Last7DaysGlance kpis={kpis} loading={kpisLoading} />
+
       {/* Filters + search + CTA */}
       <div className="flex flex-col lg:flex-row lg:items-center gap-3 lg:gap-4">
         <div className="flex flex-wrap gap-2 flex-1">
@@ -132,7 +167,60 @@ function EventCard({ event }: { event: Event }) {
       )}
       <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
         <span className="text-slate-500">Cutoff {String(event.cutoff_hour).padStart(2,'0')}:00 IST</span>
-        <span className="text-brand-600 font-medium group-hover:text-brand-700">Manage →</span>
+        <span className="flex items-center gap-3">
+          {event.status === 'live' && (
+            // Per-event Insights surface — only relevant when the event is actually
+            // live (otherwise there's no traffic to analyse). Stops event-card
+            // navigation by handling the click locally so the wrapping <Link>
+            // doesn't take precedence.
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                window.location.href = `/admin/events/${event.id}/insights`;
+              }}
+              className="text-brand-600 font-medium hover:text-brand-700 inline-flex items-center gap-1"
+              aria-label="Open Insights"
+            >
+              <span aria-hidden>📊</span> Insights
+            </button>
+          )}
+          {event.status === 'live' && (
+            // Per-event Manage page — bookings, check-in, reminders, post-sale,
+            // recap photos, refundable entries. Same click-defuse pattern as
+            // Insights so the wrapping card <Link> doesn't take over.
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                window.location.href = `/admin/events/${event.id}/manage`;
+              }}
+              className="text-brand-600 font-medium hover:text-brand-700 inline-flex items-center gap-1"
+              aria-label="Open Manage"
+            >
+              <span aria-hidden>📋</span> Manage
+            </button>
+          )}
+          {event.status === 'live' && (
+            // Per-event Promote page — tracking links + commission affiliate
+            // assignments. Only relevant once the event is publicly bookable.
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                window.location.href = `/admin/events/${event.id}/promote`;
+              }}
+              className="text-brand-600 font-medium hover:text-brand-700 inline-flex items-center gap-1"
+              aria-label="Open Promote"
+            >
+              <span aria-hidden>📣</span> Promote
+            </button>
+          )}
+          <span className="text-brand-600 font-medium group-hover:text-brand-700">Manage →</span>
+        </span>
       </div>
     </Link>
   );
@@ -207,6 +295,54 @@ function EventsIllustration() {
         <path d="M180 150 l8 -8 M188 142 l3 3 M179 144 l1 2"/>
       </g>
     </svg>
+  );
+}
+
+function Last7DaysGlance({ kpis, loading }: { kpis: KpiSnapshot | null; loading: boolean }) {
+  // Hide entirely if the request failed / 403'd — we never want to render an
+  // empty widget skeleton for users who can't see analytics in the first place.
+  if (!loading && !kpis) return null;
+
+  const tiles: { label: string; value: number | undefined; money: boolean }[] = [
+    { label: 'Total Customers',    value: kpis?.totalCustomers,    money: false },
+    { label: 'Total Incoming',     value: kpis?.totalIncoming,     money: true  },
+    { label: 'Total Cover Charge', value: kpis?.totalCoverCharge,  money: true  },
+    { label: 'Amount Issued',      value: kpis?.amountIssued,      money: true  },
+  ];
+
+  return (
+    <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-[11px] tracking-widest uppercase text-slate-400">Last 7 days at a glance</div>
+          <div className="text-sm text-slate-500 mt-0.5">Wallet, cover, and redemption activity across all events.</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
+        {tiles.map((t) => (
+          <div key={t.label} className="rounded-xl border border-slate-200 bg-[#FAFAF7] p-3 min-w-0">
+            <div className="text-[10px] uppercase tracking-widest text-slate-500 truncate">{t.label}</div>
+            <div className="text-lg font-bold text-slate-900 mt-1 truncate">
+              {loading || t.value == null
+                ? '—'
+                : t.money
+                  ? formatCompactINR(t.value)
+                  : t.value.toLocaleString('en-IN')}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 flex justify-end">
+        <Link
+          href="/admin/analytics"
+          className="text-sm font-medium text-brand-600 hover:text-brand-700 transition"
+        >
+          View full analytics →
+        </Link>
+      </div>
+    </section>
   );
 }
 

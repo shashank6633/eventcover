@@ -7,6 +7,18 @@ import { normalizePhone } from './users';
 
 export type ReservationStatus = 'pending' | 'converted' | 'no_show' | 'cancelled';
 
+/**
+ * The on-the-night ledger status used by the multi-stage check-in + cover
+ * redemption feature. Distinct from `status` (which tracks the booking
+ * lifecycle pending→converted/no_show/cancelled driven by webhooks). Kept
+ * in a separate column so the two state machines don't collide.
+ */
+export type ReservationLedgerStatusValue =
+  | 'pending'
+  | 'partially_checked_in'
+  | 'fully_checked_in'
+  | 'closed';
+
 export interface ReservationRow {
   id: string;
   event_id: string | null;       // nullable now: reservations exist independently
@@ -16,6 +28,13 @@ export interface ReservationRow {
   name: string;
   phone: string;
   email: string | null;
+  /**
+   * Total party size — physical storage column. Code that reads pax today
+   * keeps working unchanged. The multi-stage check-in feature also writes
+   * a parallel `total_pax` column (backfilled from `pax`) so future callers
+   * can migrate to a stable name; until then `pax` remains the source of
+   * truth and `total_pax` is treated as a denormalized mirror.
+   */
   pax: number;
   arrival_time: string | null;
   notes: string | null;
@@ -31,6 +50,39 @@ export interface ReservationRow {
   bday: string | null;
   anniv: string | null;
   total_visits: number | null;
+  // Phase 3: Multi-slot schedule — nullable, ignored when an event has no
+  // active event_slots rows (back-compat: existing reservations keep working).
+  slot_id: string | null;
+  // Phase 4: RSVP form answers. JSON {fieldId: string | string[]}; NULL when
+  // the event had no rsvp_fields configured at booking time. The renderer in
+  // /admin/reservations joins on the live event.rsvp_fields to label them.
+  rsvp_answers_json: string | null;
+  // ─── Multi-stage check-in + cover redemption (reservation-as-wallet) ───
+  // All numeric counters default 0 at the schema layer so legacy rows
+  // never read as null. total_pax is a denormalized mirror of pax (see
+  // doc above); the lib layer keeps them in sync where needed and the
+  // ledger module reads pax first, total_pax second.
+  /**
+   * Mirror of `pax` maintained by the application layer. Use `total_pax`
+   * for booked-capacity reads; `pax` for legacy compatibility. Both must
+   * stay in sync — every insert/update of pax MUST also update total_pax.
+   */
+  total_pax: number | null;
+  checked_in_pax: number | null;
+  entry_amount: number | null;
+  cover_amount: number | null;
+  cover_redeemed: number | null;
+  reservation_status: ReservationLedgerStatusValue | null;
+  // ─── Seating layout ─────────────────────────────────────────────────────
+  // When the event has seating_layout_enabled = 1, the public booking flow
+  // stores the chosen zone here. zone_pax_count mirrors `pax` (denormalized
+  // so analytics can SUM without re-joining), and zone_price_snapshot is
+  // the per-seat INR the customer was QUOTED at booking time — preserved
+  // even if admin later edits event_zones.price. All NULL on flat-pricing
+  // events.
+  zone_id: string | null;
+  zone_pax_count: number | null;
+  zone_price_snapshot: number | null;
 }
 
 export function listReservationsForEvent(eventId: string): ReservationRow[] {
@@ -90,8 +142,8 @@ export async function syncReservationsForEvent(eventId: string, providerId: Prov
 
   const insert = db.prepare(`
     INSERT INTO reservations
-      (id, event_id, provider, external_ref, name, phone, email, pax, arrival_time, notes, status, synced_at, raw)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      (id, event_id, provider, external_ref, name, phone, email, pax, total_pax, arrival_time, notes, status, synced_at, raw)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
   `);
 
   const findExisting = db.prepare(
@@ -102,6 +154,7 @@ export async function syncReservationsForEvent(eventId: string, providerId: Prov
     for (const r of rows) {
       const hit = findExisting.get(providerId, r.externalRef);
       if (hit) { existing++; continue; }
+      const paxValue = Number(r.pax) || 1;
       insert.run(
         nanoid(),
         eventId,
@@ -110,7 +163,9 @@ export async function syncReservationsForEvent(eventId: string, providerId: Prov
         r.name,
         r.phone,
         r.email || null,
-        Number(r.pax) || 1,
+        paxValue,
+        // total_pax: mirror invariant — keep in sync with pax on every write.
+        paxValue,
         r.arrivalTime || null,
         r.notes || null,
         now,
@@ -171,6 +226,20 @@ export interface CreateManualReservationInput {
   arrivalTime?: string | null;
   notes?: string | null;
   createdBy: string;
+  /**
+   * Phase 3: optional time slot (must belong to the resolved event). Caller
+   * is responsible for capacity checks — this is an admin path used for
+   * manual entry where overbooking is allowed at the host's discretion.
+   */
+  slotId?: string | null;
+  /**
+   * Phase 4: optional RSVP answers — {fieldId: string | string[]}. The caller
+   * is responsible for validating these against the event's rsvp_fields (the
+   * admin manual-entry path generally trusts the host so we don't re-validate
+   * here). Persisted as JSON in reservations.rsvp_answers_json; pass null /
+   * undefined to leave the column NULL.
+   */
+  rsvpAnswers?: Record<string, string | string[]> | null;
 }
 
 export function createManualReservation(input: CreateManualReservationInput): ReservationRow {
@@ -208,11 +277,29 @@ export function createManualReservation(input: CreateManualReservationInput): Re
   const id = nanoid();
   const now = Date.now();
 
+  // Validate slot_id belongs to the resolved event before stamping it.
+  // We don't enforce capacity here — manual entry is a host override path.
+  let slotId: string | null = null;
+  if (input.slotId && resolvedEventId) {
+    const slotRow = db
+      .prepare('SELECT id FROM event_slots WHERE id = ? AND event_id = ?')
+      .get(input.slotId, resolvedEventId) as { id: string } | undefined;
+    if (slotRow) slotId = slotRow.id;
+  }
+
+  // Stringify RSVP answers — null when no answers were supplied so we leave
+  // the column NULL rather than '{}', which keeps the admin reservation view
+  // able to distinguish "no answers" from "empty answers".
+  const rsvpAnswersJson =
+    input.rsvpAnswers && typeof input.rsvpAnswers === 'object'
+      ? JSON.stringify(input.rsvpAnswers)
+      : null;
+
   db.prepare(`
     INSERT INTO reservations
-      (id, event_id, event_date, provider, external_ref, name, phone, email, pax,
-       arrival_time, notes, status, synced_at, raw)
-    VALUES (?, ?, ?, 'manual', NULL, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      (id, event_id, event_date, provider, external_ref, name, phone, email, pax, total_pax,
+       arrival_time, notes, status, synced_at, raw, slot_id, rsvp_answers_json)
+    VALUES (?, ?, ?, 'manual', NULL, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
   `).run(
     id,
     resolvedEventId,
@@ -221,10 +308,14 @@ export function createManualReservation(input: CreateManualReservationInput): Re
     phone,
     input.email?.trim() || null,
     pax,
+    // total_pax: mirror invariant — keep in sync with pax on every write.
+    pax,
     input.arrivalTime?.trim() || null,
     input.notes?.trim() || null,
     now,
     JSON.stringify({ created_by: input.createdBy, source: 'manual' }),
+    slotId,
+    rsvpAnswersJson,
   );
 
   logAudit({
@@ -282,6 +373,13 @@ export interface WebhookReservationPayload {
   anniv?: string | null;
   /** Lifetime visit count for the guest. */
   totalVisits?: number | null;
+  /**
+   * Phase 4: RSVP form answers — {fieldId: string | string[]}. Most webhook
+   * providers won't send this since the field defs are EventCover-specific;
+   * the field is here so any provider that mirrors our public form can hand
+   * answers through (e.g. a future first-party form-fill endpoint).
+   */
+  rsvpAnswers?: Record<string, string | string[]> | null;
 }
 
 export interface UpsertResult {
@@ -553,16 +651,26 @@ export function upsertFromWebhook(
   const anniv = payload.anniv !== undefined ? payload.anniv : (existing?.anniv ?? null);
   const totalVisits = payload.totalVisits != null ? Number(payload.totalVisits) : (existing?.total_visits ?? null);
 
+  // RSVP answers — preserve existing value when the payload omits the key
+  // (sparse webhook update). An explicit `null` clears the column.
+  const rsvpAnswersJson =
+    payload.rsvpAnswers === undefined
+      ? (existing?.rsvp_answers_json ?? null)
+      : payload.rsvpAnswers === null
+        ? null
+        : JSON.stringify(payload.rsvpAnswers);
+
   const now = Date.now();
   const rawJson = JSON.stringify(payload.raw ?? payload);
 
   if (existing) {
     db.prepare(`
       UPDATE reservations
-      SET event_id = ?, event_date = ?, name = ?, phone = ?, email = ?, pax = ?,
+      SET event_id = ?, event_date = ?, name = ?, phone = ?, email = ?, pax = ?, total_pax = ?,
           arrival_time = ?, notes = ?, status = ?, synced_at = ?, raw = ?,
           booking_time = ?, tables_json = ?, tags_json = ?, custom_tags_json = ?,
-          preferences_json = ?, bday = ?, anniv = ?, total_visits = ?
+          preferences_json = ?, bday = ?, anniv = ?, total_visits = ?,
+          rsvp_answers_json = ?
       WHERE id = ?
     `).run(
       eventId,
@@ -570,6 +678,8 @@ export function upsertFromWebhook(
       name,
       phone,
       email || null,
+      pax,
+      // total_pax: mirror invariant — keep in sync with pax on every write.
       pax,
       arrivalTime || null,
       notes || null,
@@ -584,6 +694,7 @@ export function upsertFromWebhook(
       bday,
       anniv,
       totalVisits,
+      rsvpAnswersJson,
       existing.id,
     );
 
@@ -605,12 +716,14 @@ export function upsertFromWebhook(
   const id = nanoid();
   db.prepare(`
     INSERT INTO reservations
-      (id, event_id, event_date, provider, external_ref, name, phone, email, pax,
+      (id, event_id, event_date, provider, external_ref, name, phone, email, pax, total_pax,
        arrival_time, notes, status, synced_at, raw,
        booking_time, tables_json, tags_json, custom_tags_json,
-       preferences_json, bday, anniv, total_visits)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?)
+       preferences_json, bday, anniv, total_visits,
+       rsvp_answers_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?,
+            ?)
   `).run(
     id,
     eventId,
@@ -620,6 +733,8 @@ export function upsertFromWebhook(
     name,
     phone,
     email || null,
+    pax,
+    // total_pax: mirror invariant — keep in sync with pax on every write.
     pax,
     arrivalTime || null,
     notes || null,
@@ -634,6 +749,7 @@ export function upsertFromWebhook(
     bday,
     anniv,
     totalVisits,
+    rsvpAnswersJson,
   );
 
   logAudit({

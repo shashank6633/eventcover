@@ -1,12 +1,21 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { Event } from '@/lib/events';
-import type { ReservationRow, ReservationStatus, WebhookHealth } from '@/lib/reservations';
+import type {
+  ReservationRow,
+  ReservationStatus,
+  ReservationLedgerStatusValue,
+  WebhookHealth,
+} from '@/lib/reservations';
 import { formatMoney } from '@/lib/format';
 import { PhoneInput } from '@/components/PhoneInput';
+import type {
+  CoverStatus as DerivedCoverStatusValue,
+  ReservationLedgerStatus as DerivedReservationStatusValue,
+} from '@/components/ReservationSummaryCard';
 
 export default function ReservationsPage() {
   return (
@@ -41,6 +50,16 @@ function ReservationsClient() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  // Door-flow filters layered on top of the existing search. 'all' is the
+  // default for both so the page renders exactly the same as before unless
+  // the operator narrows down. Kept in local state — no URL sync — because
+  // they're transient triage filters, not a sharable view.
+  const [resvStatusFilter, setResvStatusFilter] = useState<
+    'all' | DerivedReservationStatusValue
+  >('all');
+  const [coverStatusFilter, setCoverStatusFilter] = useState<
+    'all' | DerivedCoverStatusValue
+  >('all');
 
   useEffect(() => {
     fetch('/api/events').then((r) => r.json()).then((d) => {
@@ -91,24 +110,91 @@ function ReservationsClient() {
   }
 
   // Client-side filter — name, phone, email, booking id, tables, tags, comments
+  // PLUS reservation_status + cover_status pills for door-night triage.
   const filtered = (() => {
     const q = search.trim().toLowerCase();
-    if (!q) return reservations;
     const digits = q.replace(/\D/g, '');
     return reservations.filter((r) => {
-      if (r.name.toLowerCase().includes(q)) return true;
-      if (r.phone.toLowerCase().includes(q)) return true;
-      if (digits && r.phone.replace(/\D/g, '').includes(digits)) return true;
-      if (r.email?.toLowerCase().includes(q)) return true;
-      if (r.external_ref?.toLowerCase().includes(q)) return true;
-      if (r.notes?.toLowerCase().includes(q)) return true;
-      if (r.tables_json?.toLowerCase().includes(q)) return true;
-      if (r.tags_json?.toLowerCase().includes(q)) return true;
-      if (r.custom_tags_json?.toLowerCase().includes(q)) return true;
-      if (r.event_name?.toLowerCase().includes(q)) return true;
-      return false;
+      // Free-text search
+      if (q) {
+        let textHit = false;
+        if (r.name.toLowerCase().includes(q)) textHit = true;
+        else if (r.phone.toLowerCase().includes(q)) textHit = true;
+        else if (digits && r.phone.replace(/\D/g, '').includes(digits)) textHit = true;
+        else if (r.email?.toLowerCase().includes(q)) textHit = true;
+        else if (r.external_ref?.toLowerCase().includes(q)) textHit = true;
+        else if (r.notes?.toLowerCase().includes(q)) textHit = true;
+        else if (r.tables_json?.toLowerCase().includes(q)) textHit = true;
+        else if (r.tags_json?.toLowerCase().includes(q)) textHit = true;
+        else if (r.custom_tags_json?.toLowerCase().includes(q)) textHit = true;
+        else if (r.event_name?.toLowerCase().includes(q)) textHit = true;
+        if (!textHit) return false;
+      }
+      // Reservation status filter (ledger status, not booking status)
+      if (resvStatusFilter !== 'all') {
+        if (deriveResvStatus(r) !== resvStatusFilter) return false;
+      }
+      // Cover status filter (derived from cover_amount / cover_redeemed)
+      if (coverStatusFilter !== 'all') {
+        if (deriveCoverStatusLocal(r) !== coverStatusFilter) return false;
+      }
+      return true;
     });
   })();
+
+  // Memoised "Today at the door" snapshot — counts vs target event date.
+  // Picks today (IST) by default; if the operator has filtered to a specific
+  // event, use that event's date instead.
+  const todayWidget = useMemo(() => {
+    const todayIST = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+    const focusedEvent = eventId ? events.find((e) => e.id === eventId) : null;
+    const focusDate = focusedEvent?.event_date ?? todayIST;
+    const focusLabel = focusedEvent?.name ?? 'Today';
+
+    const todays = reservations.filter(
+      (r) =>
+        r.event_date === focusDate &&
+        r.status !== 'cancelled' &&
+        r.status !== 'no_show',
+    );
+    if (todays.length === 0) {
+      return { focusLabel, focusDate, isEmpty: true } as const;
+    }
+
+    const counts = {
+      pending: 0,
+      partially_checked_in: 0,
+      fully_checked_in: 0,
+      closed: 0,
+    } as Record<DerivedReservationStatusValue, number>;
+    let totalPax = 0;
+    let checkedInPax = 0;
+    let coverLoaded = 0;
+    let coverRedeemed = 0;
+    for (const r of todays) {
+      counts[deriveResvStatus(r)] += 1;
+      totalPax += Number(r.total_pax ?? r.pax ?? 0);
+      checkedInPax += Number(r.checked_in_pax ?? 0);
+      coverLoaded += Number(r.cover_amount ?? 0);
+      coverRedeemed += Number(r.cover_redeemed ?? 0);
+    }
+    return {
+      focusLabel,
+      focusDate,
+      isEmpty: false,
+      counts,
+      totalPax,
+      checkedInPax,
+      coverLoaded,
+      coverRedeemed,
+      reservationCount: todays.length,
+    } as const;
+  }, [reservations, eventId, events]);
 
   const byStatus = {
     pending: filtered.filter((r) => r.status === 'pending').length,
@@ -145,6 +231,8 @@ function ReservationsClient() {
         <Stat label="Converted" value={byStatus.converted} tone="emerald" />
         <Stat label="No-shows" value={byStatus.no_show} tone="slate" />
       </div>
+
+      <TodayAtTheDoor widget={todayWidget} />
 
       {notice && (
         <div className="mt-4 rounded-lg border border-sky-200 bg-sky-50 text-sky-700 px-3 py-2 text-sm">
@@ -217,6 +305,45 @@ function ReservationsClient() {
             </select>
           </div>
         </div>
+
+        {/* Door-flow status filters — additive to the search above. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+          <div className="min-w-0">
+            <label className="label">Reservation status</label>
+            <select
+              className="input w-full"
+              value={resvStatusFilter}
+              onChange={(e) =>
+                setResvStatusFilter(
+                  e.target.value as 'all' | DerivedReservationStatusValue,
+                )
+              }
+            >
+              <option value="all">All</option>
+              <option value="pending">Pending (not checked in)</option>
+              <option value="partially_checked_in">Partial check-in</option>
+              <option value="fully_checked_in">Fully checked in</option>
+              <option value="closed">Closed</option>
+            </select>
+          </div>
+          <div className="min-w-0">
+            <label className="label">Cover status</label>
+            <select
+              className="input w-full"
+              value={coverStatusFilter}
+              onChange={(e) =>
+                setCoverStatusFilter(
+                  e.target.value as 'all' | DerivedCoverStatusValue,
+                )
+              }
+            >
+              <option value="all">All</option>
+              <option value="not_redeemed">Not redeemed</option>
+              <option value="partially_redeemed">Partially redeemed</option>
+              <option value="fully_redeemed">Fully redeemed</option>
+            </select>
+          </div>
+        </div>
         {search && (
           <div className="text-xs text-slate-500 -mt-1 mb-3">
             Showing {filtered.length} of {reservations.length} reservation{reservations.length === 1 ? '' : 's'} matching &quot;{search}&quot;.
@@ -254,6 +381,7 @@ function ReservationsClient() {
                   <th className="pb-2 text-right whitespace-nowrap">Entry</th>
                   <th className="pb-2 text-right whitespace-nowrap">Cover</th>
                   <th className="pb-2 whitespace-nowrap">Status</th>
+                  <th className="pb-2 whitespace-nowrap">Door status</th>
                   <th className="pb-2 whitespace-nowrap">Booking ID</th>
                   <th className="pb-2 pr-4 sm:pr-0"></th>
                 </tr>
@@ -353,6 +481,27 @@ function ReservationsClient() {
                         )}
                       </td>
                       <td className="py-2.5 whitespace-nowrap">
+                        <div className="flex flex-col gap-1">
+                          <ReservationStatusPill value={deriveResvStatus(r)} />
+                          <CoverStatusPill value={deriveCoverStatusLocal(r)} />
+                        </div>
+                        {(Number(r.total_pax ?? r.pax ?? 0) > 0 ||
+                          Number(r.cover_amount ?? 0) > 0) && (
+                          <div className="text-[10px] text-slate-400 mt-1">
+                            {Number(r.checked_in_pax ?? 0)}/
+                            {Number(r.total_pax ?? r.pax ?? 0)} in ·{' '}
+                            {formatMoney(
+                              Math.max(
+                                0,
+                                Number(r.cover_amount ?? 0) -
+                                  Number(r.cover_redeemed ?? 0),
+                              ),
+                            )}{' '}
+                            left
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-2.5 whitespace-nowrap">
                         {r.external_ref ? (
                           <span className="font-mono text-[10px] text-slate-500" title={r.external_ref}>
                             {truncateMiddle(r.external_ref, 14)}
@@ -362,25 +511,48 @@ function ReservationsClient() {
                         )}
                       </td>
                       <td className="py-2.5 pr-4 sm:pr-0 whitespace-nowrap">
-                        {r.status === 'pending' && r.event_id && (
-                          <>
-                            <Link
-                              className="text-xs text-emerald-600 hover:text-emerald-700 mr-3"
-                              href={`/admin/issue?r=${r.id}&eventId=${r.event_id}`}
-                            >
-                              Issue →
-                            </Link>
-                            <button className="text-xs text-slate-400 hover:text-slate-200" onClick={() => markNoShow(r.id)}>
-                              No-show
-                            </button>
-                          </>
-                        )}
-                        {r.status === 'converted' && r.converted_wallet_txn && (
-                          <Link className="text-xs text-sky-600 hover:text-sky-700"
-                                href={`/admin/redeem?t=${encodeURIComponent(r.converted_wallet_txn)}`}>
-                            Redeem →
+                        <div className="flex flex-col items-end gap-1.5">
+                          {/* Scan / Manage — opens the captain scan screen
+                              prefilled with this reservation id; the scan
+                              page mints the QR token server-side for staff
+                              use without round-tripping the camera. */}
+                          <Link
+                            className="text-xs text-brand-600 hover:text-brand-700 font-medium"
+                            href={`/admin/scan?reservationId=${encodeURIComponent(r.id)}`}
+                          >
+                            Scan / Manage →
                           </Link>
-                        )}
+                          <Link
+                            className="text-[11px] text-slate-500 hover:text-slate-700"
+                            href={`/admin/reservations/${encodeURIComponent(r.id)}/history`}
+                          >
+                            History
+                          </Link>
+                          {r.status === 'pending' && r.event_id && (
+                            <div className="flex items-center gap-3">
+                              <Link
+                                className="text-xs text-emerald-600 hover:text-emerald-700"
+                                href={`/admin/issue?r=${r.id}&eventId=${r.event_id}`}
+                              >
+                                Issue →
+                              </Link>
+                              <button
+                                className="text-xs text-slate-400 hover:text-slate-700"
+                                onClick={() => markNoShow(r.id)}
+                              >
+                                No-show
+                              </button>
+                            </div>
+                          )}
+                          {r.status === 'converted' && r.converted_wallet_txn && (
+                            <Link
+                              className="text-xs text-sky-600 hover:text-sky-700"
+                              href={`/admin/redeem?t=${encodeURIComponent(r.converted_wallet_txn)}`}
+                            >
+                              Redeem →
+                            </Link>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -639,6 +811,239 @@ function AddReservationModal({
             <button type="button" onClick={onClose} className="btn btn-secondary">Cancel</button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── Door-flow derivations + badges + widget ──────────────────────────────
+//
+// These live in this file (rather than ReservationSummaryCard.tsx) because
+// the list view doesn't have a full Ledger payload — just the row columns.
+// Keeping the derivation inline makes the reservation list a single render
+// pass off `reservations` without an extra round-trip.
+
+function deriveResvStatus(
+  r: ReservationRow,
+): DerivedReservationStatusValue {
+  if (r.reservation_status === 'closed') return 'closed';
+  const total = Number(r.total_pax ?? r.pax ?? 0);
+  const checked = Number(r.checked_in_pax ?? 0);
+  if (checked <= 0) return 'pending';
+  if (total > 0 && checked >= total) return 'fully_checked_in';
+  return 'partially_checked_in';
+}
+
+function deriveCoverStatusLocal(
+  r: ReservationRow,
+): DerivedCoverStatusValue {
+  const amount = Number(r.cover_amount ?? 0);
+  const redeemed = Number(r.cover_redeemed ?? 0);
+  if (amount <= 0) return 'not_redeemed';
+  if (redeemed <= 0) return 'not_redeemed';
+  if (redeemed >= amount) return 'fully_redeemed';
+  return 'partially_redeemed';
+}
+
+function ReservationStatusPill({
+  value,
+}: {
+  value: DerivedReservationStatusValue;
+}) {
+  const label =
+    value === 'pending'
+      ? 'Pending'
+      : value === 'partially_checked_in'
+        ? 'Partial'
+        : value === 'fully_checked_in'
+          ? 'Full'
+          : 'Closed';
+  const cls =
+    value === 'pending'
+      ? 'border-slate-200 text-slate-600 bg-slate-50'
+      : value === 'partially_checked_in'
+        ? 'border-amber-200 text-amber-700 bg-amber-50'
+        : value === 'fully_checked_in'
+          ? 'border-emerald-200 text-emerald-700 bg-emerald-50'
+          : 'border-slate-300 text-slate-700 bg-slate-100';
+  return (
+    <span className={`tag ${cls} whitespace-nowrap`} title="Reservation status">
+      {label}
+    </span>
+  );
+}
+
+function CoverStatusPill({ value }: { value: DerivedCoverStatusValue }) {
+  const label =
+    value === 'not_redeemed'
+      ? 'Not redeemed'
+      : value === 'partially_redeemed'
+        ? 'Partial cover'
+        : 'Cover used';
+  const cls =
+    value === 'not_redeemed'
+      ? 'border-slate-200 text-slate-600 bg-slate-50'
+      : value === 'partially_redeemed'
+        ? 'border-amber-200 text-amber-700 bg-amber-50'
+        : 'border-rose-200 text-rose-700 bg-rose-50';
+  return (
+    <span className={`tag ${cls} whitespace-nowrap`} title="Cover status">
+      {label}
+    </span>
+  );
+}
+
+interface TodayWidgetData {
+  focusLabel: string;
+  focusDate: string;
+  isEmpty: boolean;
+  counts?: Record<DerivedReservationStatusValue, number>;
+  totalPax?: number;
+  checkedInPax?: number;
+  coverLoaded?: number;
+  coverRedeemed?: number;
+  reservationCount?: number;
+}
+
+function TodayAtTheDoor({ widget }: { widget: TodayWidgetData }) {
+  if (widget.isEmpty) {
+    return (
+      <div className="mt-4 rounded-2xl border border-slate-200 bg-white shadow-card px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <div className="text-[10px] tracking-widest uppercase text-slate-400">
+            Today at the door
+          </div>
+          <div className="text-sm text-slate-500 mt-0.5">
+            No reservations for {widget.focusLabel}{' '}
+            <span className="text-slate-400">({widget.focusDate}).</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const checked = widget.checkedInPax ?? 0;
+  const total = widget.totalPax ?? 0;
+  const loaded = widget.coverLoaded ?? 0;
+  const redeemed = widget.coverRedeemed ?? 0;
+  const paxPct = total > 0 ? Math.min(100, Math.round((checked / total) * 100)) : 0;
+  const coverPct = loaded > 0 ? Math.min(100, Math.round((redeemed / loaded) * 100)) : 0;
+
+  return (
+    <div className="mt-4 rounded-2xl border border-slate-200 bg-white shadow-card p-4">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <div>
+          <div className="text-[10px] tracking-widest uppercase text-slate-400">
+            Today at the door
+          </div>
+          <div className="text-sm font-semibold text-slate-900 mt-0.5">
+            {widget.focusLabel}{' '}
+            <span className="text-slate-400 font-normal">
+              · {widget.focusDate}
+            </span>
+          </div>
+        </div>
+        <div className="text-xs text-slate-500">
+          {widget.reservationCount} reservation
+          {widget.reservationCount === 1 ? '' : 's'}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+        <DoorCount
+          label="Pending"
+          value={widget.counts?.pending ?? 0}
+          tone="slate"
+        />
+        <DoorCount
+          label="Partial"
+          value={widget.counts?.partially_checked_in ?? 0}
+          tone="amber"
+        />
+        <DoorCount
+          label="Full"
+          value={widget.counts?.fully_checked_in ?? 0}
+          tone="emerald"
+        />
+        <DoorCount
+          label="Closed"
+          value={widget.counts?.closed ?? 0}
+          tone="slate"
+        />
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <ProgressRow
+          label="Guests checked in"
+          left={`${checked}`}
+          right={`${total}`}
+          pct={paxPct}
+        />
+        <ProgressRow
+          label="Cover redeemed"
+          left={formatMoney(redeemed)}
+          right={formatMoney(loaded)}
+          pct={coverPct}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DoorCount({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: 'amber' | 'emerald' | 'slate';
+}) {
+  const cls =
+    tone === 'amber'
+      ? 'text-amber-700'
+      : tone === 'emerald'
+        ? 'text-emerald-700'
+        : 'text-slate-700';
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+      <div className="text-[10px] uppercase tracking-widest text-slate-500">
+        {label}
+      </div>
+      <div className={`text-lg font-bold mt-0.5 ${cls}`}>{value}</div>
+    </div>
+  );
+}
+
+function ProgressRow({
+  label,
+  left,
+  right,
+  pct,
+}: {
+  label: string;
+  left: string;
+  right: string;
+  pct: number;
+}) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between text-xs text-slate-500">
+        <span className="text-[10px] uppercase tracking-widest text-slate-400">
+          {label}
+        </span>
+        <span>
+          <span className="font-semibold text-slate-900">{left}</span>
+          <span className="text-slate-400"> / {right}</span>
+        </span>
+      </div>
+      <div className="mt-1 h-2 w-full rounded-full bg-slate-100 overflow-hidden">
+        {/* Brand color #C1551A (text-brand-500) on the fill — matches the
+            rest of the admin shell. */}
+        <div
+          className="h-full bg-brand-500 transition-[width] duration-300 ease-out"
+          style={{ width: `${pct}%` }}
+        />
       </div>
     </div>
   );

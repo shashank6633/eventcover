@@ -17,6 +17,8 @@ export interface UserRow {
   active: number;
   created_at: number;
   created_by: string | null;
+  /** ms epoch of last successful sign-in. NULL = invited, never logged in. */
+  last_login_at: number | null;
 }
 
 function toPublic(row: UserRow): PublicUser {
@@ -24,7 +26,22 @@ function toPublic(row: UserRow): PublicUser {
     id: row.id, name: row.name, phone: row.phone, email: row.email,
     role: row.role, active: !!row.active,
     created_at: row.created_at, created_by: row.created_by,
+    last_login_at: row.last_login_at ?? null,
   };
+}
+
+/**
+ * Stamp the user's last_login_at to "now" — called from any sign-in path
+ * that successfully verifies an identity (OTP, PIN). Best-effort: silently
+ * swallows DB errors so a transient write failure can't block a login.
+ */
+export function touchLastLogin(userId: string, at: number = Date.now()): void {
+  try {
+    const db = getDb();
+    db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(at, userId);
+  } catch {
+    /* swallow — login must not be gated on bookkeeping */
+  }
 }
 
 export function listUsers(): PublicUser[] {

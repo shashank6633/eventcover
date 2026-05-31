@@ -16,7 +16,13 @@ export async function GET() {
   if ('forbidden' in session) {
     return NextResponse.json({ ok: false, message: session.message }, { status: session.status });
   }
-  const affiliates = listAffiliates().map((a) => ({
+  // The global affiliates dashboard is the commission-affiliate dashboard —
+  // per-event "tracking links" (kind='tracking') live on /admin/events/[id]/promote
+  // and have no business showing up here. Filter at the API boundary so every
+  // consumer (admin list + future integrations) sees a clean commission-only
+  // view. Pre-migration rows all hydrate to kind='commission' so this is a
+  // no-op for legacy data.
+  const affiliates = listAffiliates({ kind: 'commission' }).map((a) => ({
     ...a,
     assignments: listAssignments(a.id),
   }));

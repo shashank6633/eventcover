@@ -21,4 +21,10 @@ export interface PublicUser {
   active: boolean;
   created_at: number;
   created_by: string | null;
+  /**
+   * Last successful sign-in timestamp (ms epoch). NULL when the user was
+   * invited but never logged in — drives the "Pending" status pill on the
+   * Team section.
+   */
+  last_login_at: number | null;
 }

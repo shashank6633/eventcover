@@ -3,6 +3,8 @@ import {
   listEvents, createEvent,
   type CoverPolicy, type EventStatus,
 } from '@/lib/events';
+import type { TicketDesign } from '@/lib/ticket-design';
+import type { FieldDef } from '@/lib/rsvp-fields';
 import { validatePaxRules, validateBookingTypes } from '@/lib/events-validators';
 import { requireRole } from '@/lib/auth';
 
@@ -62,6 +64,7 @@ export async function POST(req: NextRequest) {
 
     description: body.description ?? null,
     image_data: body.image_data ?? null,
+    card_image: body.card_image ?? null,
     start_time: body.start_time ?? null,
     is_public: body.is_public !== false,
     venue_id: body.venue_id ?? null,
@@ -72,6 +75,38 @@ export async function POST(req: NextRequest) {
     faqs: body.faqs ?? null,
     booking_types: bookingTypes,
     messages_config: body.messages_config ?? {},
+
+    // Optional. Backend auto-generates slug from name+date if blank,
+    // and uses venue-wide META_PIXEL_ID if meta_pixel_id is blank.
+    slug: typeof body.slug === 'string' ? body.slug : null,
+    meta_pixel_id: typeof body.meta_pixel_id === 'string' ? body.meta_pixel_id : null,
+    refund_policy: typeof body.refund_policy === 'string' ? body.refund_policy : null,
+    one_line_summary: typeof body.one_line_summary === 'string' ? body.one_line_summary : null,
+
+    // Phase 4 — pass through ticket_design + rsvp_fields if the wizard sends
+    // them on initial create. createEvent() runs both through their respective
+    // parsers (parseTicketDesign / parseRsvpFields) so unknown fields, junk
+    // hex colors, and malformed entries are all dropped before write.
+    ticket_design:
+      body.ticket_design && typeof body.ticket_design === 'object' && !Array.isArray(body.ticket_design)
+        ? (body.ticket_design as Partial<TicketDesign>)
+        : null,
+    rsvp_fields: Array.isArray(body.rsvp_fields) ? (body.rsvp_fields as FieldDef[]) : null,
+
+    // ─── Per-event Settings — fee payer + inquiry phone + GST toggle ──────
+    // All optional on create; createEvent() falls back to safe defaults
+    // ('host' / NULL / 0) when omitted. Enum gates prevent garbage from
+    // reaching the DB write path.
+    inquiry_phone: typeof body.inquiry_phone === 'string' ? body.inquiry_phone : null,
+    payment_gateway_fee_payer:
+      body.payment_gateway_fee_payer === 'customer' || body.payment_gateway_fee_payer === 'host'
+        ? body.payment_gateway_fee_payer
+        : undefined,
+    platform_fee_payer:
+      body.platform_fee_payer === 'customer' || body.platform_fee_payer === 'host'
+        ? body.platform_fee_payer
+        : undefined,
+    gst_enabled: 'gst_enabled' in body ? !!body.gst_enabled : undefined,
   });
 
   return NextResponse.json({ ok: true, event });

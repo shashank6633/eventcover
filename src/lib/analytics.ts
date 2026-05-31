@@ -371,3 +371,410 @@ export function computeAnalytics(filters: AnalyticsFilters = {}): AnalyticsResul
 
   return { lifetime, range, transactions, employees, rangeFrom, rangeTo };
 }
+
+// ─── Dashboard aggregations ─────────────────────────────────────────────────
+//
+// New, dashboard-oriented metrics that power the /admin/analytics "Dashboard"
+// tab. These are independent from computeAnalytics (the cashier-style ledger)
+// and are split into one function per chart so the UI can fetch them in
+// parallel and cache them individually. All queries are read-only and
+// parameterised; none of them mutate state (no sweepExpired) — the dashboard
+// is a pure read endpoint.
+//
+// Default range = last 30 days (UTC). Callers SHOULD pass an explicit range;
+// the helpers accept undefined and fall back to that default.
+
+export interface DashboardRangeFilters {
+  /** UTC ms inclusive. Defaults to now - 30d. */
+  from?: number;
+  /** UTC ms exclusive. Defaults to now. */
+  to?: number;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function resolveDashboardRange(f: DashboardRangeFilters): { from: number; to: number } {
+  const now = Date.now();
+  const to = f.to ?? now;
+  const from = f.from ?? to - 30 * DAY_MS;
+  return { from, to };
+}
+
+// ─── KPIs ───────────────────────────────────────────────────────────────────
+
+export interface DashboardKpis {
+  /** Sum of (wallets entry+cover) + (non-comp tickets price) + (captured payments). */
+  totalRevenue: number;
+  /** Count of wallets with status='active' and balance>0, issued in-range. */
+  activeWallets: number;
+  /** Count of reservations created in-range (any status). */
+  reservationsCount: number;
+  /**
+   * Conversion rate = (wallets in-range w/ reservation_id) / clicks in-range.
+   * Returned as a fraction 0..1, or `null` when there are no clicks in-range
+   * (avoids divide-by-zero and misleading "0%" in the UI).
+   */
+  conversionRate: number | null;
+}
+
+export function getKpis(filters: DashboardRangeFilters = {}): DashboardKpis {
+  const db = getDb();
+  const { from, to } = resolveDashboardRange(filters);
+
+  // Revenue stream 1: wallets issued in-range — entry + cover charged.
+  const walletRev = db.prepare(`
+    SELECT COALESCE(SUM(entry_fee + cover_issued), 0) AS total
+    FROM wallets
+    WHERE issued_at >= ? AND issued_at < ?
+  `).get(from, to) as { total: number };
+
+  // Revenue stream 2: tickets issued in-range, paid (non-complimentary).
+  const ticketRev = db.prepare(`
+    SELECT COALESCE(SUM(price), 0) AS total
+    FROM tickets
+    WHERE created_at >= ? AND created_at < ?
+      AND status = 'issued' AND complimentary = 0
+  `).get(from, to) as { total: number };
+
+  // Revenue stream 3: Razorpay payments captured in-range. These represent
+  // paid online bookings — distinct from wallets (offline cover) and tickets
+  // (offline guestlist). No dedupe needed: a captured payment does not also
+  // appear as a wallet row in the current data model.
+  const paymentRev = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS total
+    FROM payments
+    WHERE status = 'captured'
+      AND verified_at IS NOT NULL
+      AND verified_at >= ? AND verified_at < ?
+  `).get(from, to) as { total: number };
+
+  const totalRevenue =
+    (walletRev.total || 0) + (ticketRev.total || 0) + (paymentRev.total || 0);
+
+  // Active wallets — still-redeemable wallets issued in-range.
+  const active = db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM wallets
+    WHERE status = 'active' AND balance > 0
+      AND issued_at >= ? AND issued_at < ?
+  `).get(from, to) as { c: number };
+
+  // Reservations created in-range (synced_at is the creation timestamp;
+  // see src/lib/reservations.ts:24).
+  const res = db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM reservations
+    WHERE synced_at >= ? AND synced_at < ?
+  `).get(from, to) as { c: number };
+
+  // Conversion rate — wallets attributed to reservations / affiliate clicks.
+  // Numerator = wallets in-range that originated from a reservation.
+  // Denominator = affiliate clicks in-range.
+  // Both signals approximate "intent → wallet" — when clicks==0 we cannot
+  // compute a rate, so we return null and let the UI render "—".
+  const clicks = db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM affiliate_clicks
+    WHERE created_at >= ? AND created_at < ?
+  `).get(from, to) as { c: number };
+
+  const convertedWallets = db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM wallets
+    WHERE reservation_id IS NOT NULL
+      AND issued_at >= ? AND issued_at < ?
+  `).get(from, to) as { c: number };
+
+  const conversionRate =
+    clicks.c > 0 ? Math.max(0, Math.min(1, convertedWallets.c / clicks.c)) : null;
+
+  return {
+    totalRevenue,
+    activeWallets: active.c || 0,
+    reservationsCount: res.c || 0,
+    conversionRate,
+  };
+}
+
+// ─── Revenue by event ───────────────────────────────────────────────────────
+
+export interface RevenueByEventRow {
+  eventId: string;
+  eventName: string;
+  eventDate: string;
+  revenue: number;
+  walletCount: number;
+}
+
+export interface RevenueByEventFilters extends DashboardRangeFilters {
+  /** Cap on rows returned. Defaults to 10. */
+  limit?: number;
+}
+
+export function getRevenueByEvent(filters: RevenueByEventFilters = {}): RevenueByEventRow[] {
+  const db = getDb();
+  const { from, to } = resolveDashboardRange(filters);
+  const limit = Math.max(1, Math.min(100, filters.limit ?? 10));
+
+  // Pre-aggregate each revenue stream by event_id, then UNION ALL and sum.
+  // LEFT JOIN events at the end so events with zero revenue in-range are
+  // excluded (they wouldn't appear in any of the three sub-queries).
+  const rows = db.prepare(`
+    WITH per_event AS (
+      SELECT event_id,
+             SUM(entry_fee + cover_issued) AS revenue,
+             COUNT(*) AS wallet_count
+        FROM wallets
+       WHERE event_id IS NOT NULL
+         AND issued_at >= ? AND issued_at < ?
+       GROUP BY event_id
+
+      UNION ALL
+
+      SELECT event_id,
+             SUM(price) AS revenue,
+             0 AS wallet_count
+        FROM tickets
+       WHERE event_id IS NOT NULL
+         AND created_at >= ? AND created_at < ?
+         AND status = 'issued' AND complimentary = 0
+       GROUP BY event_id
+
+      UNION ALL
+
+      SELECT event_id,
+             SUM(amount) AS revenue,
+             0 AS wallet_count
+        FROM payments
+       WHERE event_id IS NOT NULL
+         AND status = 'captured'
+         AND verified_at IS NOT NULL
+         AND verified_at >= ? AND verified_at < ?
+       GROUP BY event_id
+    )
+    SELECT e.id           AS eventId,
+           e.name         AS eventName,
+           e.event_date   AS eventDate,
+           COALESCE(SUM(pe.revenue), 0)      AS revenue,
+           COALESCE(SUM(pe.wallet_count), 0) AS walletCount
+      FROM per_event pe
+      JOIN events e ON e.id = pe.event_id
+     GROUP BY e.id, e.name, e.event_date
+     ORDER BY revenue DESC
+     LIMIT ?
+  `).all(from, to, from, to, from, to, limit) as RevenueByEventRow[];
+
+  return rows;
+}
+
+// ─── Conversion funnel ──────────────────────────────────────────────────────
+
+export interface ConversionFunnel {
+  clicks: number;
+  reservations: number;
+  wallets: number;
+  /** Percent (0..100) of clicks that became reservations; null when clicks=0. */
+  clickToReservationPct: number | null;
+  /** Percent (0..100) of reservations that became wallets; null when reservations=0. */
+  reservationToWalletPct: number | null;
+}
+
+export function getConversionFunnel(filters: DashboardRangeFilters = {}): ConversionFunnel {
+  const db = getDb();
+  const { from, to } = resolveDashboardRange(filters);
+
+  const clicks = db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM affiliate_clicks
+    WHERE created_at >= ? AND created_at < ?
+  `).get(from, to) as { c: number };
+
+  const reservations = db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM reservations
+    WHERE synced_at >= ? AND synced_at < ?
+  `).get(from, to) as { c: number };
+
+  const wallets = db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM wallets
+    WHERE issued_at >= ? AND issued_at < ?
+  `).get(from, to) as { c: number };
+
+  const clickToReservationPct =
+    clicks.c > 0 ? Math.max(0, Math.min(100, (reservations.c / clicks.c) * 100)) : null;
+  const reservationToWalletPct =
+    reservations.c > 0 ? Math.max(0, Math.min(100, (wallets.c / reservations.c) * 100)) : null;
+
+  return {
+    clicks: clicks.c || 0,
+    reservations: reservations.c || 0,
+    wallets: wallets.c || 0,
+    clickToReservationPct,
+    reservationToWalletPct,
+  };
+}
+
+// ─── Affiliate breakdown ────────────────────────────────────────────────────
+
+export interface AffiliateBreakdownRow {
+  affiliateId: string;
+  affiliateName: string;
+  code: string;
+  attributedClicks: number;
+  attributedWallets: number;
+  attributedRevenue: number;
+}
+
+export interface AffiliateBreakdownFilters extends DashboardRangeFilters {
+  /** Cap on rows returned. Defaults to 8. */
+  limit?: number;
+}
+
+export function getAffiliateBreakdown(
+  filters: AffiliateBreakdownFilters = {},
+): AffiliateBreakdownRow[] {
+  const db = getDb();
+  const { from, to } = resolveDashboardRange(filters);
+  const limit = Math.max(1, Math.min(100, filters.limit ?? 8));
+
+  // Per-affiliate aggregates over the range. We compute clicks + wallets +
+  // revenue independently and join them onto affiliates. Conversions are
+  // measured as tickets carrying the affiliate_id in-range (this is the only
+  // attribution stream currently wired; wallets attributed via affiliates
+  // are not yet tracked — known limitation).
+  //
+  // Note: "attributedWallets" here actually counts attributed *tickets* —
+  // we keep the field name for the spec's contract. When wallet-level
+  // attribution lands, this query can union in the wallet count.
+  const rows = db.prepare(`
+    SELECT a.id   AS affiliateId,
+           a.name AS affiliateName,
+           a.code AS code,
+           COALESCE(c.cnt, 0)        AS attributedClicks,
+           COALESCE(t.cnt, 0)        AS attributedWallets,
+           COALESCE(comm.total, 0)   AS attributedRevenue
+      FROM affiliates a
+      LEFT JOIN (
+        SELECT affiliate_id, COUNT(*) AS cnt
+          FROM affiliate_clicks
+         WHERE created_at >= ? AND created_at < ?
+         GROUP BY affiliate_id
+      ) c ON c.affiliate_id = a.id
+      LEFT JOIN (
+        SELECT affiliate_id, COUNT(*) AS cnt
+          FROM tickets
+         WHERE affiliate_id IS NOT NULL
+           AND created_at >= ? AND created_at < ?
+         GROUP BY affiliate_id
+      ) t ON t.affiliate_id = a.id
+      LEFT JOIN (
+        SELECT affiliate_id, COALESCE(SUM(sale_amount), 0) AS total
+          FROM affiliate_commissions
+         WHERE created_at >= ? AND created_at < ?
+         GROUP BY affiliate_id
+      ) comm ON comm.affiliate_id = a.id
+     WHERE COALESCE(c.cnt, 0) + COALESCE(t.cnt, 0) + COALESCE(comm.total, 0) > 0
+     ORDER BY attributedRevenue DESC, attributedClicks DESC
+     LIMIT ?
+  `).all(from, to, from, to, from, to, limit) as AffiliateBreakdownRow[];
+
+  return rows;
+}
+
+// ─── Peak-hour heatmap ──────────────────────────────────────────────────────
+
+export interface PeakHourCell {
+  /** 0 = Sunday … 6 = Saturday (IST). */
+  dayOfWeek: number;
+  /** 0..23 in IST. */
+  hour: number;
+  /** Number of wallets issued in this (dow, hour) bucket. */
+  count: number;
+}
+
+/**
+ * Returns a flat list of (dow, hour, count) wallet-issuance buckets.
+ *
+ * SQLite's strftime treats the third argument as a modifier — passing
+ * '+05:30' shifts the unix timestamp into IST before the format pieces are
+ * extracted. India observes no DST so this is stable year-round.
+ */
+export function getPeakHourHeatmap(filters: DashboardRangeFilters = {}): PeakHourCell[] {
+  const db = getDb();
+  const { from, to } = resolveDashboardRange(filters);
+
+  const rows = db.prepare(`
+    SELECT CAST(strftime('%w', issued_at / 1000, 'unixepoch', '+05:30') AS INTEGER) AS dayOfWeek,
+           CAST(strftime('%H', issued_at / 1000, 'unixepoch', '+05:30') AS INTEGER) AS hour,
+           COUNT(*) AS count
+      FROM wallets
+     WHERE issued_at >= ? AND issued_at < ?
+     GROUP BY dayOfWeek, hour
+     ORDER BY dayOfWeek ASC, hour ASC
+  `).all(from, to) as PeakHourCell[];
+
+  return rows;
+}
+
+// ─── Repeat-customer rate ───────────────────────────────────────────────────
+
+export interface RepeatRate {
+  firstTime: number;
+  returning: number;
+  /** Returning ÷ (returning + firstTime) × 100; 0 when both are 0. */
+  repeatRatePct: number;
+}
+
+/**
+ * Classifies each guest with activity in-range as "firstTime" (this is
+ * their only wallet+ticket across all time) or "returning" (>=2 lifetime
+ * wallets/tickets). Repeat rate is the fraction returning.
+ *
+ * Phone normalization caveat: guests are keyed by `guests.id` but the
+ * upstream lookups in src/lib/wallet.ts may create separate guest rows for
+ * the same phone with different formatting (with/without +91). When that
+ * happens, this query will count one human as two guests. Reuse a phone-
+ * normalization helper before grouping if more accuracy is required.
+ */
+export function getRepeatRate(filters: DashboardRangeFilters = {}): RepeatRate {
+  const db = getDb();
+  const { from, to } = resolveDashboardRange(filters);
+
+  // Guests with at least one wallet or ticket in-range.
+  const activeGuests = db.prepare(`
+    SELECT guest_id FROM wallets
+     WHERE guest_id IS NOT NULL AND issued_at >= ? AND issued_at < ?
+    UNION
+    SELECT guest_id FROM tickets
+     WHERE guest_id IS NOT NULL AND created_at >= ? AND created_at < ?
+  `).all(from, to, from, to) as { guest_id: string }[];
+
+  if (activeGuests.length === 0) {
+    return { firstTime: 0, returning: 0, repeatRatePct: 0 };
+  }
+
+  // Lifetime totals for each in-range guest. Returning = lifetime total >= 2.
+  const ids = activeGuests.map((g) => g.guest_id);
+  const placeholders = ids.map(() => '?').join(',');
+  const totals = db.prepare(`
+    SELECT guest_id, SUM(n) AS total FROM (
+      SELECT guest_id, COUNT(*) AS n FROM wallets WHERE guest_id IN (${placeholders}) GROUP BY guest_id
+      UNION ALL
+      SELECT guest_id, COUNT(*) AS n FROM tickets WHERE guest_id IN (${placeholders}) GROUP BY guest_id
+    )
+    GROUP BY guest_id
+  `).all(...ids, ...ids) as { guest_id: string; total: number }[];
+
+  let firstTime = 0;
+  let returning = 0;
+  for (const row of totals) {
+    if ((row.total || 0) >= 2) returning += 1;
+    else firstTime += 1;
+  }
+
+  const denom = firstTime + returning;
+  const repeatRatePct = denom > 0 ? (returning / denom) * 100 : 0;
+
+  return { firstTime, returning, repeatRatePct };
+}
