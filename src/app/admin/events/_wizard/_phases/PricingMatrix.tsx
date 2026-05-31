@@ -49,14 +49,80 @@ interface Props {
   scopes: ScopeRow[];
 }
 
-// Debounce window for autosaving a price/inventory edit. 400ms matches the
-// architect spec and feels snappy without spamming PATCH on every keystroke.
-const SAVE_DEBOUNCE_MS = 400;
+// Debounce window for the BACKGROUND autosave. 1200ms is more relaxed than the
+// 400ms it used to be — the explicit Save button is now the primary affordance;
+// autosave is only a safety net so a mid-edit refresh doesn't lose anything.
+const SAVE_DEBOUNCE_MS = 1200;
+
+/** Per-cell flush function the matrix Save button collects + invokes. */
+type CellFlush = () => Promise<void>;
 
 export function PricingMatrix({ eventId, phases, scopes }: Props) {
   const [cells, setCells] = useState<Map<string, PriceCell>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // ─── Save-button state ────────────────────────────────────────────────
+  //
+  // Each cell registers a flush() with us on mount + reports its dirty state
+  // whenever its drafts diverge from the canonical PriceCell. The Save
+  // button reads `dirtyKeys.size` for its enable/disable + label, and walks
+  // `flushRegistry` to commit every pending edit when clicked.
+  //
+  // We keep the registry in a ref (not state) because cells register on every
+  // mount + we don't want each mount to re-render the parent. The dirty SET
+  // is in state because the button's label depends on it.
+  const flushRegistry = useRef(new Map<string, CellFlush>());
+  const [dirtyKeys, setDirtyKeys] = useState<Set<string>>(new Set());
+  const [savingState, setSavingState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const savedFadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const registerFlush = useCallback((key: string, fn: CellFlush | null) => {
+    if (fn) flushRegistry.current.set(key, fn);
+    else flushRegistry.current.delete(key);
+  }, []);
+
+  const notifyDirty = useCallback((key: string, isDirty: boolean) => {
+    setDirtyKeys((prev) => {
+      const has = prev.has(key);
+      if (isDirty === has) return prev;
+      const next = new Set(prev);
+      if (isDirty) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
+
+  const handleSaveAll = useCallback(async () => {
+    if (flushRegistry.current.size === 0) return;
+    if (savedFadeTimer.current) {
+      clearTimeout(savedFadeTimer.current);
+      savedFadeTimer.current = null;
+    }
+    setSavingState('saving');
+    try {
+      // Snapshot the registry — flush() may unregister itself if the cell
+      // unmounts as the matrix re-keys mid-save.
+      const flushes = Array.from(flushRegistry.current.values());
+      await Promise.all(flushes.map((f) => f().catch(() => undefined)));
+      setSavingState('saved');
+      setSavedAt(Date.now());
+      // Auto-fade the "Saved ✓" pill back to idle after 2.5s so the header
+      // doesn't sit cluttered with stale status.
+      savedFadeTimer.current = setTimeout(() => setSavingState('idle'), 2500);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Save failed.');
+      setSavingState('error');
+    }
+  }, []);
+
+  // Clean up the fade timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (savedFadeTimer.current) clearTimeout(savedFadeTimer.current);
+    };
+  }, []);
 
   // Stable key for the (phase, scope, scopeId) tuple used in the cells map.
   const cellKey = useCallback(
@@ -172,16 +238,50 @@ export function PricingMatrix({ eventId, phases, scopes }: Props) {
     );
   }
 
+  const dirtyCount = dirtyKeys.size;
+  const canSave = dirtyCount > 0 && savingState !== 'saving';
+
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
-      <header>
-        <div className="text-sm font-semibold text-slate-900">
-          Pricing matrix
+      <header className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-slate-900">
+            Pricing matrix
+          </div>
+          <p className="text-xs text-slate-500 mt-0.5">
+            One row per ticket type and zone. One column per phase. Set price and
+            (optional) inventory for each combination.
+          </p>
         </div>
-        <p className="text-xs text-slate-500 mt-0.5">
-          One row per ticket type and zone. One column per phase. Set price and
-          (optional) inventory for each combination.
-        </p>
+        <div className="flex items-center gap-2 shrink-0">
+          <SaveStatus state={savingState} dirtyCount={dirtyCount} savedAt={savedAt} />
+          <button
+            type="button"
+            onClick={handleSaveAll}
+            disabled={!canSave}
+            className={
+              'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ' +
+              (canSave
+                ? 'bg-brand-600 text-white hover:bg-brand-700 shadow-sm'
+                : 'bg-slate-100 text-slate-400 cursor-not-allowed')
+            }
+            aria-label={
+              dirtyCount > 0
+                ? `Save ${dirtyCount} unsaved change${dirtyCount === 1 ? '' : 's'}`
+                : 'All changes saved'
+            }
+          >
+            {savingState === 'saving' ? (
+              <>
+                <Spinner /> Saving…
+              </>
+            ) : dirtyCount > 0 ? (
+              `Save ${dirtyCount} change${dirtyCount === 1 ? '' : 's'}`
+            ) : (
+              'Save'
+            )}
+          </button>
+        </div>
       </header>
 
       {error && (
@@ -242,8 +342,11 @@ export function PricingMatrix({ eventId, phases, scopes }: Props) {
                           phaseId={p.id}
                           scope={s.scope}
                           scopeId={s.scopeId}
+                          cellKey={k}
                           cell={cell}
                           onCommit={commitCell}
+                          registerFlush={registerFlush}
+                          notifyDirty={notifyDirty}
                         />
                       </td>
                     );
@@ -256,8 +359,9 @@ export function PricingMatrix({ eventId, phases, scopes }: Props) {
       )}
 
       <p className="text-[11px] text-slate-400 italic">
-        Changes save automatically. Blank inventory = unlimited. Sold count is read-only —
-        derived from captured payments.
+        Click <span className="font-semibold not-italic text-slate-500">Save</span> to commit edits.
+        Background autosave runs every 1.2s as a safety net. Blank inventory = unlimited.
+        Sold count is read-only — derived from captured payments.
       </p>
     </div>
   );
@@ -303,19 +407,26 @@ function PricingCell({
   phaseId,
   scope,
   scopeId,
+  cellKey,
   cell,
   onCommit,
+  registerFlush,
+  notifyDirty,
 }: {
   phaseId: string;
   scope: Scope;
   scopeId: string | null;
+  /** Stable map key the parent uses to track dirty status + flush callbacks. */
+  cellKey: string;
   cell: PriceCell | undefined;
   onCommit: (
     phaseId: string,
     scope: Scope,
     scopeId: string | null,
     patch: { price?: number; inventory?: number | null },
-  ) => void;
+  ) => Promise<void> | void;
+  registerFlush: (key: string, fn: (() => Promise<void>) | null) => void;
+  notifyDirty: (key: string, isDirty: boolean) => void;
 }) {
   const [priceDraft, setPriceDraft] = useState(
     cell ? String(cell.price) : '',
@@ -384,6 +495,62 @@ function PricingCell({
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, []);
+
+  // ─── Dirty tracking + Save-button flush hook ─────────────────────────
+  //
+  // Compute whether the current drafts diverge from the canonical cell.
+  // Reported up so the parent can render "N changes" + enable Save.
+  const canonicalPrice = cell ? String(cell.price) : '';
+  const canonicalInv = cell?.inventory == null ? '' : String(cell.inventory);
+  const isDirty =
+    (priceDraft.trim() !== '' || canonicalPrice !== '') &&
+    (priceDraft !== canonicalPrice || invDraft !== canonicalInv);
+
+  useEffect(() => {
+    notifyDirty(cellKey, isDirty);
+  }, [cellKey, isDirty, notifyDirty]);
+
+  // Drop our dirty entry from the parent's set on unmount so stale keys
+  // don't keep the Save button enabled.
+  useEffect(() => {
+    return () => {
+      notifyDirty(cellKey, false);
+    };
+  }, [cellKey, notifyDirty]);
+
+  // Build the immediate-flush function the parent's Save button invokes.
+  // Cancels any pending debounce + sends the current drafts in a single PATCH.
+  // Captured via latestRef so we always send the freshest typed values.
+  const flushNow = useCallback(async (): Promise<void> => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    const { priceDraft: p, invDraft: i } = latestRef.current;
+    const patch: { price?: number; inventory?: number | null } = {};
+    const priceNum = Number(p);
+    if (Number.isFinite(priceNum) && priceNum >= 0 && (cell == null || priceNum !== cell.price)) {
+      patch.price = priceNum;
+    }
+    const invCanonical = cell?.inventory ?? null;
+    if (i.trim() === '') {
+      if (invCanonical !== null) patch.inventory = null;
+    } else {
+      const invNum = Number(i);
+      if (Number.isFinite(invNum) && invNum >= 0 && invNum !== invCanonical) {
+        patch.inventory = Math.floor(invNum);
+      }
+    }
+    if (Object.keys(patch).length === 0) return;
+    await onCommit(phaseId, scope, scopeId, patch);
+  }, [cell, phaseId, scope, scopeId, onCommit]);
+
+  // (Re)register the flush function with the parent whenever flushNow
+  // changes — e.g. when the canonical cell mutates and the diff math shifts.
+  useEffect(() => {
+    registerFlush(cellKey, flushNow);
+    return () => registerFlush(cellKey, null);
+  }, [cellKey, registerFlush, flushNow]);
 
   const isEmpty = cell == null;
 
@@ -523,6 +690,79 @@ function pickMessage(
     return resp.message;
   }
   return fallback;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Save status pill — sits next to the Save button in the header
+ * ────────────────────────────────────────────────────────────────────── */
+function SaveStatus({
+  state,
+  dirtyCount,
+  savedAt,
+}: {
+  state: 'idle' | 'saving' | 'saved' | 'error';
+  dirtyCount: number;
+  savedAt: number | null;
+}) {
+  if (state === 'saving') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500">
+        <Spinner /> Saving…
+      </span>
+    );
+  }
+  if (state === 'saved') {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600"
+        title={savedAt ? `Saved at ${new Date(savedAt).toLocaleTimeString()}` : undefined}
+      >
+        <svg className="w-3 h-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path
+            fillRule="evenodd"
+            d="M16.7 5.3a1 1 0 010 1.4l-7.5 7.5a1 1 0 01-1.4 0l-4-4a1 1 0 011.4-1.4L8.5 12.1l6.8-6.8a1 1 0 011.4 0z"
+            clipRule="evenodd"
+          />
+        </svg>
+        Saved
+      </span>
+    );
+  }
+  if (state === 'error') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-rose-600">
+        Save failed
+      </span>
+    );
+  }
+  if (dirtyCount > 0) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700">
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" aria-hidden="true" />
+        {dirtyCount} unsaved
+      </span>
+    );
+  }
+  return null;
+}
+
+function Spinner() {
+  return (
+    <svg
+      className="animate-spin w-3 h-3 text-current"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="4" />
+      <path
+        d="M4 12a8 8 0 018-8"
+        stroke="currentColor"
+        strokeWidth="4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
 }
 
 // Re-export so parent sections can build their scope list without
