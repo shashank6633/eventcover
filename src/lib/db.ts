@@ -744,6 +744,22 @@ function migrate(db: Database.Database) {
   // /api/reservations/public — bad payloads never reach this column.
   addResCol('rsvp_answers_json', 'TEXT');
 
+  // ─── M/F/C — per-category guest breakdown ──────────────────────────────────
+  // Booking form (PublicBookingForm) + the admin manual-reservation form now
+  // capture how the party splits across Male / Female / Couple. These columns
+  // are read by /admin/reservations (display pill), /admin/bookings (the
+  // global Bookings dashboard joins on them) and /api/payments/verify (stamps
+  // the breakdown from payments.notes onto the reservation row).
+  //
+  // The initial CREATE TABLE statement at the top of this file also lists
+  // them, but databases that were created BEFORE this migration block was
+  // added (i.e. every existing install) need an explicit ALTER TABLE — SQLite
+  // doesn't auto-add columns when the schema source changes. Default 0 so
+  // legacy rows read as zero across the board.
+  addResCol('male_count',   'INTEGER DEFAULT 0');
+  addResCol('female_count', 'INTEGER DEFAULT 0');
+  addResCol('couple_count', 'INTEGER DEFAULT 0');
+
   // ─── Phase 2: Coupons ────────────────────────────────────────────────────
   // event_coupons holds discount codes. event_id NULL means "venue-wide" —
   // applies to any event. discount_type is 'fixed' (INR off) or 'percent'
