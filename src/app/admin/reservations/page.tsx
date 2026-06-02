@@ -570,6 +570,13 @@ function ReservationsClient() {
                               </button>
                             </div>
                           )}
+                          {/* Prepay link — only when the row has an event
+                              attached AND isn't already paid. The link
+                              expires in 7d; re-clicking generates a fresh
+                              one and revokes the prior. */}
+                          {r.status === 'pending' && r.event_id && (
+                            <SendPaymentLinkButton reservation={r} />
+                          )}
                           {r.status === 'converted' && r.converted_wallet_txn && (
                             <Link
                               className="text-xs text-sky-600 hover:text-sky-700"
@@ -1096,6 +1103,136 @@ function ProgressRow({
       </div>
     </div>
   );
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * SendPaymentLinkButton — per-row action for Reservego prepay flow
+ *
+ * Calls POST /api/reservations/[id]/send-payment-link to mint a fresh
+ * HMAC-signed prepay URL, then:
+ *   1. Copies the URL to clipboard (universal fallback)
+ *   2. If the operator wants, opens WhatsApp Web/app via wa.me deep link
+ *      with the prepay URL pre-typed
+ *
+ * Shows status pills underneath:
+ *   - "Link sent <relative time>" when payment_link_sent_at is set
+ *   - "Paid ✓" when payment_id is non-null (verify route writes this)
+ *
+ * Local optimistic state — flips the pill the moment the API call returns,
+ * so the operator sees the change without waiting for a full list refresh.
+ * ──────────────────────────────────────────────────────────────────────── */
+function SendPaymentLinkButton({ reservation }: { reservation: ReservationWithEvent }) {
+  const r = reservation as ReservationWithEvent & {
+    payment_link_sent_at?: number | null;
+    payment_link_token?: string | null;
+    payment_id?: string | null;
+  };
+
+  const [busy, setBusy] = useState(false);
+  const [optimisticSentAt, setOptimisticSentAt] = useState<number | null>(null);
+  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; message: string } | null>(null);
+
+  const sentAt = optimisticSentAt ?? r.payment_link_sent_at ?? null;
+  const paid = !!r.payment_id;
+
+  async function send() {
+    if (busy) return;
+    setBusy(true);
+    setToast(null);
+    try {
+      const res = await fetch(`/api/reservations/${encodeURIComponent(r.id)}/send-payment-link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const d = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        message?: string;
+        url?: string;
+        whatsappUrl?: string | null;
+      };
+      if (!res.ok || !d.ok || !d.url) {
+        setToast({ kind: 'err', message: d.message || `HTTP ${res.status}` });
+        return;
+      }
+      setOptimisticSentAt(Date.now());
+
+      // Copy the URL to clipboard for the universal "paste anywhere" case.
+      // Clipboard API can throw under non-secure contexts — swallow and
+      // surface the URL via the toast instead so the operator still gets it.
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(d.url);
+        copied = true;
+      } catch { /* ignore */ }
+
+      setToast({
+        kind: 'ok',
+        message: copied
+          ? 'Link copied to clipboard.'
+          : d.url,
+      });
+
+      // Auto-open WhatsApp in a new tab when we got a wa.me URL — the host
+      // can decide whether to actually send. Opening it preemptively saves
+      // a manual step in the common case.
+      if (d.whatsappUrl) {
+        window.open(d.whatsappUrl, '_blank', 'noopener,noreferrer');
+      }
+    } catch (e) {
+      setToast({
+        kind: 'err',
+        message: e instanceof Error ? e.message : 'Network error.',
+      });
+    } finally {
+      setBusy(false);
+      // Clear the toast after 5s so the row goes quiet.
+      setTimeout(() => setToast(null), 5000);
+    }
+  }
+
+  if (paid) {
+    return (
+      <span className="text-xs text-emerald-600 font-semibold">
+        ✓ Paid
+      </span>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <button
+        type="button"
+        onClick={send}
+        disabled={busy}
+        className="text-xs text-sky-600 hover:text-sky-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+      >
+        {busy ? 'Sending…' : sentAt ? 'Resend link' : 'Send pay link'}
+      </button>
+      {sentAt && !toast && (
+        <span className="text-[10px] text-slate-400">
+          link sent {relTime(sentAt)}
+        </span>
+      )}
+      {toast && (
+        <span
+          className={`text-[10px] truncate max-w-[200px] ${
+            toast.kind === 'ok' ? 'text-emerald-600' : 'text-rose-600'
+          }`}
+          title={toast.message}
+        >
+          {toast.message}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function relTime(ts: number): string {
+  const delta = Date.now() - ts;
+  if (delta < 60_000) return 'just now';
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
+  return `${Math.floor(delta / 86_400_000)}d ago`;
 }
 
 /* ────────────────────────────────────────────────────────────────────────

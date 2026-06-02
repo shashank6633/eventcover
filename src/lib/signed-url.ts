@@ -255,3 +255,80 @@ export function verifyReservationQrToken(token: string): ReservationQrPayload | 
   if (payload.exp <= Date.now()) return null;
   return payload;
 }
+
+// ─── Reservego prepay tokens ──────────────────────────────────────────────
+//
+// Powers the prepay flow: host generates a signed link → guest opens it →
+// pays through Razorpay → reservation gets linked to a real payments row.
+//
+// Why a separate token class (not reuse reservation_qr)?
+// The QR is a door-side scanner contract (long-lived, used many times to
+// debit cover at the bar). Prepay is a one-shot payment URL with a short
+// TTL — leaking a prepay token grants payment-form access, leaking a QR
+// grants cover-redemption access. Different blast radius → different
+// purpose tag. The same SECRET signs both; the `purpose` discriminator
+// makes them non-interchangeable.
+//
+// Default TTL: 7 days. Most venues want guests to pay within 24–72h of the
+// reservation, but 7d gives slack for late-arriving messages and timezone
+// edge cases. A leaked link auto-expires after 7d.
+
+export interface ReservationPrepayPayload {
+  reservationId: string;
+  /** Discriminator — must equal 'reservation_prepay'. */
+  purpose: 'reservation_prepay';
+  /** Unix milliseconds. */
+  exp: number;
+}
+
+/**
+ * Mint a signed token for the prepay landing page. The customer opens
+ * /p/<token> → server verifies the HMAC → renders the prepay form with
+ * the reservation prefilled.
+ */
+export function signReservationPrepayToken(
+  input: { reservationId: string; ttlSeconds?: number },
+): string {
+  const ttl = input.ttlSeconds ?? 60 * 60 * 24 * 7;  // 7 days
+  const payload: ReservationPrepayPayload = {
+    reservationId: input.reservationId,
+    purpose: 'reservation_prepay',
+    exp: Date.now() + ttl * 1000,
+  };
+  const payloadStr = JSON.stringify(payload);
+  const payloadB64 = b64urlEncode(payloadStr);
+  const sig = createHmac('sha256', getSecret()).update(payloadB64).digest('base64url');
+  return `${payloadB64}.${sig}`;
+}
+
+/**
+ * Verify a prepay token and return its decoded payload — or null on any
+ * failure (bad format, bad signature, expired, OR wrong purpose tag).
+ *
+ * The `purpose === 'reservation_prepay'` check is load-bearing: prevents a
+ * leaked wallet / wallet-view / reservation-qr token from being replayed
+ * here even though all four share the same HMAC key.
+ */
+export function verifyReservationPrepayToken(token: string): ReservationPrepayPayload | null {
+  if (!token || typeof token !== 'string') return null;
+  const [payloadB64, sig] = token.split('.');
+  if (!payloadB64 || !sig) return null;
+
+  const expected = createHmac('sha256', getSecret()).update(payloadB64).digest();
+  const provided = b64urlDecode(sig);
+  if (!provided || provided.length !== expected.length) return null;
+  if (!timingSafeEqual(expected, provided)) return null;
+
+  const payloadBuf = b64urlDecode(payloadB64);
+  if (!payloadBuf) return null;
+  let payload: ReservationPrepayPayload;
+  try {
+    payload = JSON.parse(payloadBuf.toString('utf8')) as ReservationPrepayPayload;
+  } catch {
+    return null;
+  }
+  if (!payload?.reservationId || typeof payload.exp !== 'number') return null;
+  if (payload.purpose !== 'reservation_prepay') return null;
+  if (payload.exp <= Date.now()) return null;
+  return payload;
+}

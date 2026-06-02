@@ -225,6 +225,22 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Reservego prepay — link the reservation to its captured payment so
+      // the Bookings dashboard + admin reservations list show "PAID ✓"
+      // status and so the host can stop sending follow-up reminders. This
+      // happens on EVERY capture (not just prepay-token-sourced ones) —
+      // an /admin/issue door wallet still flips the reservation to
+      // converted via the existing wallet code path, but online capture
+      // wasn't writing the payment FK back. payment_id is nullable so
+      // captures without a reservation (e.g. wallet top-ups) skip cleanly.
+      if (payment.reservation_id) {
+        db.prepare(`
+          UPDATE reservations
+          SET payment_id = ?, status = 'converted'
+          WHERE id = ?
+        `).run(payment.id, payment.reservation_id);
+      }
+
       // Zone reservation — only applies when the reservation was bound to
       // a zone at booking time. If the host disabled the seating layout
       // between order and verify, payment.zone_id stays NULL and this

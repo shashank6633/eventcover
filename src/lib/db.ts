@@ -760,6 +760,19 @@ function migrate(db: Database.Database) {
   addResCol('female_count', 'INTEGER DEFAULT 0');
   addResCol('couple_count', 'INTEGER DEFAULT 0');
 
+  // ─── Reservego prepay — guest pays cover in advance via online link ─────
+  // Adds three nullable columns on reservations so the prepay flow can
+  // attach to ANY reservation (Reservego inbound or manual entry — same
+  // table) without a separate "prepay_tickets" sibling table.
+  //
+  // payment_link_sent_at  — unix ms when host issued the link. NULL = never.
+  // payment_link_token    — HMAC-signed token baked into the customer URL.
+  // payment_id            — FK to payments.id once the customer pays. NULL
+  //                         when status='pending' (link sent but unpaid).
+  addResCol('payment_link_sent_at', 'INTEGER');
+  addResCol('payment_link_token',   'TEXT');
+  addResCol('payment_id',           'TEXT');
+
   // ─── Phase 2: Coupons ────────────────────────────────────────────────────
   // event_coupons holds discount codes. event_id NULL means "venue-wide" —
   // applies to any event. discount_type is 'fixed' (INR off) or 'percent'
@@ -871,6 +884,14 @@ function migrate(db: Database.Database) {
   // DEFAULT '{}' so legacy rows hydrate to {} and the renderer falls back
   // cleanly without a separate backfill step.
   addEvCol('ticket_design_json', "TEXT DEFAULT '{}'");
+
+  // ─── Reservego prepay — per-event auto-send toggle ─────────────────────
+  // When 1, every Reservego webhook arrival for this event auto-mints a
+  // payment link + fires the Interakt template. When 0 (default), the host
+  // sends links manually from /admin/reservations. Set in the wizard's
+  // Settings section (Reservego sub-card). 0 by default so existing events
+  // behave exactly as before this feature shipped.
+  addEvCol('reservego_auto_prepay', 'INTEGER DEFAULT 0');
 
   // event_invitees — phone-list mode entries. Phones are stored already
   // normalized via normalizePhone(). Unique-per-event so the same phone

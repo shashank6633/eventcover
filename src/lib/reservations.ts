@@ -91,6 +91,18 @@ export interface ReservationRow {
   male_count: number | null;
   female_count: number | null;
   couple_count: number | null;
+  // ─── Reservego prepay (online cover-payment link) ──────────────────────
+  // payment_link_sent_at: unix ms when the host issued the latest link.
+  // payment_link_token: the HMAC-signed token baked into /p/<token>. When
+  //                      the host sends a NEW link this is overwritten so
+  //                      the old link returns 410 even if HMAC-valid.
+  // payment_id: FK to payments.id once the customer actually pays.
+  //              NULL when the row's never paid online (manual venue
+  //              settlement still flips reservations.status='converted' +
+  //              writes converted_wallet_txn, but leaves payment_id NULL).
+  payment_link_sent_at: number | null;
+  payment_link_token: string | null;
+  payment_id: string | null;
 }
 
 export function listReservationsForEvent(eventId: string): ReservationRow[] {

@@ -11,6 +11,7 @@ import {
   getRazorpayConfig,
   createRazorpayOrder,
 } from '@/lib/razorpay';
+import { verifyReservationPrepayToken } from '@/lib/signed-url';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -86,13 +87,47 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => ({})) as {
     reservationId?: unknown;
+    prepayToken?: unknown;
     couponCode?: unknown;
     sessionId?: unknown;
     ticketType?: unknown;
     zoneName?: unknown;
     genderMix?: { male?: unknown; female?: unknown; couple?: unknown; couples?: unknown };
   };
-  const reservationId = String(body.reservationId || '').trim();
+
+  // Prepay path: the customer arrived from a /p/<token> Reservego-prepay
+  // link instead of the public event page. Verify the token, look up the
+  // reservation it points to, and feed that id into the normal flow. The
+  // rest of the route stays identical — table/zone selection, M/F/C, fee
+  // overlay, Razorpay order creation. The only path-specific bit is that
+  // the token must still match the row's current payment_link_token (host
+  // can revoke a prior link by issuing a new one).
+  let reservationId = String(body.reservationId || '').trim();
+  const prepayToken = typeof body.prepayToken === 'string' ? body.prepayToken.trim() : '';
+  if (prepayToken && !reservationId) {
+    const payload = verifyReservationPrepayToken(prepayToken);
+    if (!payload) {
+      return NextResponse.json(
+        { ok: false, message: 'This payment link is invalid or has expired.' },
+        { status: 400 },
+      );
+    }
+    const res = getReservation(payload.reservationId);
+    if (!res) {
+      return NextResponse.json(
+        { ok: false, message: 'Reservation not found.' },
+        { status: 404 },
+      );
+    }
+    const rowToken = (res as unknown as { payment_link_token?: string | null }).payment_link_token;
+    if (!rowToken || rowToken !== prepayToken) {
+      return NextResponse.json(
+        { ok: false, message: 'This payment link has been replaced. Please use the newest link from the venue.' },
+        { status: 410 },
+      );
+    }
+    reservationId = res.id;
+  }
   const rawCouponCode = typeof body.couponCode === 'string' ? body.couponCode.trim() : '';
 
   // ── M/F/C gender breakdown (optional) ────────────────────────────────
