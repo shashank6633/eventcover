@@ -154,8 +154,19 @@ export function computeBilling(input: PricingInput): PricingBreakdown {
   // Resolution order for per-unit price (zone/flat path):
   //   activePhasePrice  →  zonePrice  →  entry_fee_per_person
   // A phase override always wins because the host's phased release is the
-  // most recent pricing decision. Cover charges (gender-mix path) are
-  // bypassed whenever ANY per-unit override is in effect.
+  // most recent pricing decision.
+  //
+  // Cover-charge stacking (M/F/C model):
+  // When genderMix is supplied, we ALWAYS add cover = M×male_stag +
+  // F×female_stag + C×couple on top of the base — regardless of whether
+  // the base came from a phase/zone override or the flat entry path. This
+  // matches the "Table price + per-category cover on top" pricing model the
+  // host configured: a Table of 4 reserves the seat, the per-category
+  // cover funds the door entry.
+  //
+  // Back-compat: when genderMix is NOT supplied and a phase/zone override
+  // IS, base = perUnitOverride * pax (no cover) — same as before, used by
+  // the legacy zone-picker flow.
   let base: number;
   const phaseOverride =
     input.activePhasePrice != null && Number.isFinite(input.activePhasePrice)
@@ -166,21 +177,34 @@ export function computeBilling(input: PricingInput): PricingBreakdown {
       ? nnf(input.zonePrice)
       : null;
   const perUnitOverride = phaseOverride ?? zoneOverride;
+
+  // Compute cover separately so we can stack it on either the override
+  // path OR the flat-entry path.
+  const hasGenderMix =
+    input.genderMix != null &&
+    (nnf(input.genderMix.male) > 0 ||
+      nnf(input.genderMix.female) > 0 ||
+      nnf(input.genderMix.couple) > 0);
+  const counts: GuestCounts = {
+    male: Math.floor(nnf(input.genderMix?.male)),
+    female: Math.floor(nnf(input.genderMix?.female)),
+    couple: Math.floor(nnf(input.genderMix?.couple)),
+  };
+  const rates: CoverRates = {
+    male_stag: nnf(ev.cover_rates?.male_stag),
+    female_stag: nnf(ev.cover_rates?.female_stag),
+    couple: nnf(ev.cover_rates?.couple),
+  };
+  const cover = hasGenderMix ? calculateCoverCharges(counts, rates) : 0;
+
   if (perUnitOverride != null) {
-    base = perUnitOverride * pax;
+    // Table / zone / phased release path. Cover stacks on top of the
+    // per-unit price when the customer provided a gender mix; otherwise
+    // we preserve the legacy "override replaces everything" semantics.
+    base = perUnitOverride * pax + cover;
   } else {
+    // Flat-entry path. Entry fee per head + per-category cover.
     const entry = nnf(ev.entry_fee_per_person) * pax;
-    const counts: GuestCounts = {
-      male: Math.floor(nnf(input.genderMix?.male)),
-      female: Math.floor(nnf(input.genderMix?.female)),
-      couple: Math.floor(nnf(input.genderMix?.couple)),
-    };
-    const rates: CoverRates = {
-      male_stag: nnf(ev.cover_rates?.male_stag),
-      female_stag: nnf(ev.cover_rates?.female_stag),
-      couple: nnf(ev.cover_rates?.couple),
-    };
-    const cover = calculateCoverCharges(counts, rates);
     base = entry + cover;
   }
   base = round2(Math.max(0, base));

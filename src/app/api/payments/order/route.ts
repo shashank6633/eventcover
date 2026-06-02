@@ -90,9 +90,32 @@ export async function POST(req: NextRequest) {
     sessionId?: unknown;
     ticketType?: unknown;
     zoneName?: unknown;
+    genderMix?: { male?: unknown; female?: unknown; couple?: unknown; couples?: unknown };
   };
   const reservationId = String(body.reservationId || '').trim();
   const rawCouponCode = typeof body.couponCode === 'string' ? body.couponCode.trim() : '';
+
+  // ── M/F/C gender breakdown (optional) ────────────────────────────────
+  // The booking form now ships {male, female, couples} so the calculator
+  // can stack per-category cover charges on top of the table / phase / zone
+  // price. Sanitize each count to a non-negative integer; if all zero (or
+  // omitted), the calculator falls back to the legacy entry-only base.
+  const rawMix = body.genderMix && typeof body.genderMix === 'object' ? body.genderMix : null;
+  const toNonNegInt = (v: unknown): number => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.floor(n);
+  };
+  const genderMix = rawMix
+    ? {
+        male: toNonNegInt(rawMix.male),
+        female: toNonNegInt(rawMix.female),
+        // accept either `couple` or `couples` from the client — match
+        // the calculator's `couple` key
+        couple: toNonNegInt(rawMix.couple ?? rawMix.couples),
+      }
+    : null;
+  const hasMix = genderMix !== null && (genderMix.male > 0 || genderMix.female > 0 || genderMix.couple > 0);
   // Phase-4 analytics: the customer's per-session analytics id, captured by
   // <EventAnalyticsTracker> on the public event page. We persist it into
   // payments.notes JSON so /api/payments/verify (and the failure webhook)
@@ -147,6 +170,24 @@ export async function POST(req: NextRequest) {
   }
 
   const pax = Math.max(1, Math.floor(Number(reservation.pax) || 1));
+
+  // ── M/F/C invariant: M + F + 2C MUST equal pax ──
+  // For a Table of 4, M+F+2C = 4 (e.g. 2M+2F, or 0M+0F+2C). For flat
+  // entry, pax is already the M+F+2C the customer entered on the form.
+  // We enforce here so a tampered client can't send pax=4, mix=0M+0F+1C
+  // (= 2 people) and pay for a cheaper bill than the seats they took.
+  if (hasMix) {
+    const seatedPax = genderMix.male + genderMix.female + genderMix.couple * 2;
+    if (seatedPax !== pax) {
+      return NextResponse.json(
+        {
+          ok: false,
+          message: `Guest mix does not match pax: ${genderMix.male} male + ${genderMix.female} female + ${genderMix.couple} couples = ${seatedPax} guests, but reservation has ${pax}.`,
+        },
+        { status: 400 },
+      );
+    }
+  }
 
   // ── Determine the per-unit price + base amount (pre fee/GST overlay) ──
   // We feed the pricing-calculator a single zonePrice so it can compute
@@ -240,6 +281,11 @@ export async function POST(req: NextRequest) {
     zonePrice: pricePerUnit,
     activePhasePrice: activePhaseInfo ? activePhaseInfo.price : undefined,
     couponDiscount,
+    // M/F/C: when the customer entered a gender mix, pass it through so
+    // the calculator stacks per-category cover (M×male_stag + F×female_stag
+    // + C×couple) on top of the per-unit table/phase/zone price. Deposit
+    // mode never adds cover (the deposit is a sunk amount).
+    genderMix: hasMix && mode !== 'deposit' ? genderMix : undefined,
   });
   const amountInr = breakdown.final;
   const subtotalInr = breakdown.subtotal;
@@ -283,6 +329,14 @@ export async function POST(req: NextRequest) {
   if (rawTicketType) notesPayload.ticketType = rawTicketType;
   if (rawZoneName) notesPayload.zoneName = rawZoneName;
   notesPayload.fee_breakdown = breakdown;
+  // M/F/C: stash the gender breakdown so /api/payments/verify can stamp
+  // male_count/female_count/couple_count onto the reservation row when
+  // capture succeeds (the booking form sends it once at order creation;
+  // verify is where the row mutation happens). Door staff + the manage
+  // page then see "2M · 1F · 1C" next to the pax count.
+  if (hasMix) {
+    notesPayload.gender_mix = genderMix;
+  }
   // Phased Ticket Releases — stash the active phase id + scope so
   // /api/payments/verify can bump the right sold counter on capture, and
   // so reconciliation can audit "this booking locked in the Early Bird

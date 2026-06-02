@@ -83,6 +83,14 @@ export interface ReservationRow {
   zone_id: string | null;
   zone_pax_count: number | null;
   zone_price_snapshot: number | null;
+  // ─── M/F/C breakdown (per-category covers) ─────────────────────────────
+  // Stamped by /api/payments/verify from the genderMix the customer entered
+  // on the public booking form. Used to render the "2M · 1F · 1C" pill on
+  // the admin reservations list + drive door-staff expectations before scan.
+  // Default 0 at schema level — legacy rows always read as 0.
+  male_count: number | null;
+  female_count: number | null;
+  couple_count: number | null;
 }
 
 export function listReservationsForEvent(eventId: string): ReservationRow[] {
@@ -240,6 +248,12 @@ export interface CreateManualReservationInput {
    * undefined to leave the column NULL.
    */
   rsvpAnswers?: Record<string, string | string[]> | null;
+  /**
+   * M/F/C breakdown — persisted to male_count / female_count / couple_count
+   * on the reservation row so the admin list + door staff see the split.
+   * Pass null / undefined to leave all three columns at 0 (legacy path).
+   */
+  genderMix?: { male: number; female: number; couple: number } | null;
 }
 
 export function createManualReservation(input: CreateManualReservationInput): ReservationRow {
@@ -295,11 +309,18 @@ export function createManualReservation(input: CreateManualReservationInput): Re
       ? JSON.stringify(input.rsvpAnswers)
       : null;
 
+  // M/F/C breakdown — non-negative ints; default 0 so legacy callers
+  // omitting the field write zeros and read back as 0.
+  const mxMale = Math.max(0, Math.floor(Number(input.genderMix?.male ?? 0)));
+  const mxFemale = Math.max(0, Math.floor(Number(input.genderMix?.female ?? 0)));
+  const mxCouple = Math.max(0, Math.floor(Number(input.genderMix?.couple ?? 0)));
+
   db.prepare(`
     INSERT INTO reservations
       (id, event_id, event_date, provider, external_ref, name, phone, email, pax, total_pax,
-       arrival_time, notes, status, synced_at, raw, slot_id, rsvp_answers_json)
-    VALUES (?, ?, ?, 'manual', NULL, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+       arrival_time, notes, status, synced_at, raw, slot_id, rsvp_answers_json,
+       male_count, female_count, couple_count)
+    VALUES (?, ?, ?, 'manual', NULL, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     resolvedEventId,
@@ -316,6 +337,9 @@ export function createManualReservation(input: CreateManualReservationInput): Re
     JSON.stringify({ created_by: input.createdBy, source: 'manual' }),
     slotId,
     rsvpAnswersJson,
+    mxMale,
+    mxFemale,
+    mxCouple,
   );
 
   logAudit({

@@ -195,6 +195,36 @@ export async function POST(req: NextRequest) {
         WHERE id = ?
       `).run(paymentId, signature, now, now, payment.id);
 
+      // M/F/C — stamp the gender breakdown onto the reservation row so the
+      // admin reservations table + the per-event Manage page can render
+      // "2M · 1F · 1C" next to the pax count and door staff knows the mix
+      // before the QR scan even fires. The order route already validated
+      // that M + F + 2C === pax, so writing these counts cannot drift from
+      // the reservation's pax. Quietly skip when the payload didn't include
+      // a mix (legacy/older clients) — the columns default to 0.
+      if (payment.reservation_id && payment.notes) {
+        try {
+          const parsed = JSON.parse(payment.notes) as { gender_mix?: { male?: number; female?: number; couple?: number } };
+          const mix = parsed?.gender_mix;
+          if (
+            mix &&
+            (Number.isFinite(mix.male) || Number.isFinite(mix.female) || Number.isFinite(mix.couple))
+          ) {
+            const m = Math.max(0, Math.floor(Number(mix.male) || 0));
+            const f = Math.max(0, Math.floor(Number(mix.female) || 0));
+            const c = Math.max(0, Math.floor(Number(mix.couple) || 0));
+            db.prepare(`
+              UPDATE reservations
+              SET male_count = ?, female_count = ?, couple_count = ?
+              WHERE id = ?
+            `).run(m, f, c, payment.reservation_id);
+          }
+        } catch {
+          // Malformed notes JSON — safe to swallow; the columns just stay 0.
+          // The fee_breakdown read elsewhere uses the same try/catch pattern.
+        }
+      }
+
       // Zone reservation — only applies when the reservation was bound to
       // a zone at booking time. If the host disabled the seating layout
       // between order and verify, payment.zone_id stays NULL and this

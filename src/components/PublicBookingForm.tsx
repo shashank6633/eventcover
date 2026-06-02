@@ -185,6 +185,15 @@ interface Props {
   gstPercent?: number;
   discountPercent?: number;
   /**
+   * M/F/C cover rates from event config. When all three are zero the form
+   * hides the gender-split UI and falls back to a single pax counter — that
+   * matches venues that don't run per-category cover (e.g. flat-entry shows
+   * where everyone pays the same).
+   */
+  coverRates?: { male_stag: number; female_stag: number; couple: number };
+  /** Flat per-head entry fee (used when no table/zone/phase override). */
+  entryFeePerPerson?: number;
+  /**
    * Phased Ticket Releases — when supplied, the form renders a banner above
    * the ticket picker AND overrides the displayed price per zone /
    * flat_entry with the matching entry from phasePrices. When `activePhase`
@@ -422,10 +431,41 @@ export function PublicBookingForm({
   activePhase = null,
   phasePrices = [],
   nextPhasePreview = null,
+  coverRates = { male_stag: 0, female_stag: 0, couple: 0 },
+  entryFeePerPerson: _entryFeePerPerson = 0,
 }: Props) {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState(''); // E.164 from PhoneInput; '' when invalid
-  const [pax, setPax] = useState<number>(2);
+
+  // ── M/F/C breakdown ───────────────────────────────────────────────────
+  // When the venue runs per-category cover charges (any of male_stag /
+  // female_stag / couple > 0), we replace the single pax counter with
+  // three steppers. Total pax is derived as M + F + 2C so a Table of 4
+  // can be 2M+2F, or 0M+0F+2C — whatever the customer chooses, the seat
+  // count stays right. When all three rates are 0, the form falls back
+  // to the legacy single pax input.
+  const hasCoverRates =
+    Number(coverRates.male_stag) > 0 ||
+    Number(coverRates.female_stag) > 0 ||
+    Number(coverRates.couple) > 0;
+  const [male, setMale] = useState<number>(0);
+  const [female, setFemale] = useState<number>(0);
+  const [couples, setCouples] = useState<number>(0);
+  // Legacy single-pax state — used only when hasCoverRates is false.
+  const [legacyPax, setLegacyPax] = useState<number>(2);
+  const pax = hasCoverRates ? male + female + couples * 2 : legacyPax;
+  const setPax = (n: number) => {
+    if (hasCoverRates) {
+      // Distribute into "male" by default — keeps the simple pax-only API
+      // working for code paths (zone pre-fill, etc.) that still mutate pax
+      // directly. Customer can rebalance via the steppers afterwards.
+      setMale(Math.max(0, Math.floor(n)));
+      setFemale(0);
+      setCouples(0);
+    } else {
+      setLegacyPax(Math.max(1, Math.floor(n)));
+    }
+  };
   const [notes, setNotes] = useState('');
 
   // Phase 4 — dynamic RSVP answers keyed by FieldDef.id. checkbox fields
@@ -578,7 +618,10 @@ export function PublicBookingForm({
   function reset() {
     setName('');
     setPhone('');
-    setPax(2);
+    setMale(0);
+    setFemale(0);
+    setCouples(0);
+    setLegacyPax(2);
     setNotes('');
     setCouponCode('');
     setCouponError(null);
@@ -864,6 +907,13 @@ export function PublicBookingForm({
           // checkout_success / checkout_failed rows emitted from verify or
           // the failure webhook are funnel-stitched to this session.
           sessionId: analyticsSessionId,
+          // M/F/C — only sent when the venue runs per-category cover. The
+          // server stacks M×male_stag + F×female_stag + C×couple on top of
+          // the table/phase/zone price and stamps the breakdown onto the
+          // reservation row for door staff visibility.
+          ...(hasCoverRates
+            ? { genderMix: { male, female, couple: couples } }
+            : {}),
         }),
       });
       order = (await res.json().catch(() => ({}))) as OrderResponse;
@@ -1094,7 +1144,11 @@ export function PublicBookingForm({
     isPaid &&
     (paymentGatewayFeePayer === 'customer' ||
       platformFeePayer === 'customer' ||
-      gstEnabled);
+      gstEnabled ||
+      // Also show the breakdown whenever the customer ran the M/F/C stepper
+      // so the live per-category subtotals + final total appear together
+      // even on a host-pays-all-fees event.
+      (hasCoverRates && (male > 0 || female > 0 || couples > 0)));
 
   // Phased Ticket Releases — resolve the effective per-unit price for the
   // current selection. When an active phase has an override for the picked
@@ -1123,13 +1177,29 @@ export function PublicBookingForm({
   // already total for full_cover at pax=1; we multiply when full_cover
   // mode and a higher pax is selected). Phase pricing (when active)
   // overrides both via effectiveUnitPrice above.
+  // M/F/C cover stack — when the venue runs per-category cover, total cover
+  // = M × male_stag + F × female_stag + C × couple. This rides ON TOP of
+  // any table/phase/zone price (matches the server-side calculator).
+  const coverStack =
+    hasCoverRates
+      ? male * Number(coverRates.male_stag) +
+        female * Number(coverRates.female_stag) +
+        couples * Number(coverRates.couple)
+      : 0;
+
   const breakdownBase: number | null = (() => {
     if (hasSeating && selectedZone) {
       const unit = selectedZonePhasePrice ? selectedZonePhasePrice.price : selectedZone.price;
-      return unit * Math.max(1, pax);
+      return unit * Math.max(1, pax) + coverStack;
     }
     if (flatEntryPhasePrice) {
-      return flatEntryPhasePrice.price * Math.max(1, pax);
+      return flatEntryPhasePrice.price * Math.max(1, pax) + coverStack;
+    }
+    if (hasCoverRates && coverStack > 0) {
+      // Pure M/F/C flat-entry path — cover IS the base, no separate
+      // entry-fee multiplier on top (the host already chose to bill via
+      // cover rates rather than entry_fee_per_person).
+      return coverStack;
     }
     if (paymentMode === 'full_cover' && paymentAmount != null) {
       // paymentAmount from the public route is computed at pax=1, so scale
@@ -1435,26 +1505,81 @@ export function PublicBookingForm({
         />
       </div>
 
-      <div>
-        <label className="label" htmlFor="pbf-pax">
-          Number of people (pax)
-        </label>
-        <input
-          id="pbf-pax"
-          type="number"
-          inputMode="numeric"
-          min={1}
-          max={50}
-          className="input"
-          value={pax}
-          onChange={(e) => {
-            const n = parseInt(e.target.value, 10);
-            setPax(Number.isFinite(n) ? n : 0);
-          }}
-          required
-          disabled={busy}
-        />
-      </div>
+      {hasCoverRates ? (
+        <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3 space-y-2">
+          <div className="flex items-baseline justify-between">
+            <div className="text-sm font-semibold text-slate-900">Guests</div>
+            <div className="text-[11px] text-slate-500">
+              {pax} {pax === 1 ? 'guest' : 'guests'}
+              {hasSeating && selectedZone
+                ? ` · ${selectedZoneRemaining} seats available`
+                : ''}
+            </div>
+          </div>
+
+          <GuestRow
+            label="Male"
+            sublabel={`₹${formatRupees(Number(coverRates.male_stag))} per person`}
+            count={male}
+            unitPrice={Number(coverRates.male_stag) || 0}
+            disabled={busy}
+            onDecrement={() => setMale(Math.max(0, male - 1))}
+            onIncrement={() => setMale(male + 1)}
+          />
+          <GuestRow
+            label="Female"
+            sublabel={`₹${formatRupees(Number(coverRates.female_stag))} per person`}
+            count={female}
+            unitPrice={Number(coverRates.female_stag) || 0}
+            disabled={busy}
+            onDecrement={() => setFemale(Math.max(0, female - 1))}
+            onIncrement={() => setFemale(female + 1)}
+          />
+          <GuestRow
+            label="Couple"
+            sublabel={`₹${formatRupees(Number(coverRates.couple))} per couple · 2 pax`}
+            count={couples}
+            unitPrice={Number(coverRates.couple) || 0}
+            disabled={busy}
+            onDecrement={() => setCouples(Math.max(0, couples - 1))}
+            onIncrement={() => setCouples(couples + 1)}
+          />
+
+          {pax < 1 && (
+            <div className="text-[11px] text-rose-600 mt-1">
+              Add at least one guest to continue.
+            </div>
+          )}
+          {hasSeating && selectedZone && pax !== selectedZoneRemaining && pax > 0 && (
+            <div className="text-[11px] text-amber-700 mt-1">
+              Selected {selectedZone.zone_label} fits {selectedZoneRemaining}{' '}
+              {selectedZoneRemaining === 1 ? 'guest' : 'guests'}. Your guest
+              mix sums to {pax}. Adjust to match the seat count.
+            </div>
+          )}
+        </div>
+      ) : (
+        <div>
+          <label className="label" htmlFor="pbf-pax">
+            Number of people (pax)
+          </label>
+          <input
+            id="pbf-pax"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={50}
+            className="input"
+            value={pax}
+            onChange={(e) => {
+              const n = parseInt(e.target.value, 10);
+              setPax(Number.isFinite(n) ? n : 0);
+            }}
+            required
+            disabled={busy}
+          />
+        </div>
+      )}
 
       {/* Phase 3 — slot picker. Only rendered when the event has at least
           one active slot. The customer must pick one before submit; the
@@ -1880,5 +2005,70 @@ export function PublicBookingForm({
         </p>
       )}
     </form>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * GuestRow — single M/F/C stepper line
+ *
+ * Renders inside the Guests card on the public booking form. Each row is a
+ * label + sublabel + (− N +) stepper + live subtotal pill on the right.
+ * The component is stateless — count is owned by the form so it can sum the
+ * three rows into pax and ship genderMix in the order POST.
+ * ──────────────────────────────────────────────────────────────────────── */
+function GuestRow({
+  label,
+  sublabel,
+  count,
+  unitPrice,
+  disabled,
+  onIncrement,
+  onDecrement,
+}: {
+  label: string;
+  sublabel: string;
+  count: number;
+  unitPrice: number;
+  disabled?: boolean;
+  onIncrement: () => void;
+  onDecrement: () => void;
+}) {
+  const subtotal = count * unitPrice;
+  return (
+    <div className="flex items-center gap-3 bg-white rounded-lg border border-slate-200 px-3 py-2">
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-semibold text-slate-900">{label}</div>
+        <div className="text-[11px] text-slate-500">{sublabel}</div>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onDecrement}
+          disabled={disabled || count === 0}
+          aria-label={`Decrease ${label}`}
+          className="w-7 h-7 rounded-md border border-slate-300 text-slate-600 text-sm font-semibold hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
+        >
+          −
+        </button>
+        <div
+          className="min-w-[28px] text-center text-sm font-semibold text-slate-900 tabular-nums"
+          aria-live="polite"
+        >
+          {count}
+        </div>
+        <button
+          type="button"
+          onClick={onIncrement}
+          disabled={disabled}
+          aria-label={`Increase ${label}`}
+          className="w-7 h-7 rounded-md border border-slate-300 text-slate-600 text-sm font-semibold hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
+        >
+          +
+        </button>
+      </div>
+      <div className="min-w-[64px] text-right text-xs font-mono text-slate-600 tabular-nums">
+        {subtotal > 0 ? `₹${formatRupees(subtotal)}` : '—'}
+      </div>
+    </div>
   );
 }

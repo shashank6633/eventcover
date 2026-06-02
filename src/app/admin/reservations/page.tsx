@@ -409,6 +409,31 @@ function ReservationsClient() {
                       </td>
                       <td className="py-2.5 whitespace-nowrap">
                         <div className="text-base font-semibold text-slate-900">{r.pax}</div>
+                        {/* M/F/C breakdown pill. Rendered only when at least
+                            one of the three counters is set — keeps the row
+                            quiet for reservations that didn't capture the mix
+                            (legacy bookings, manual entries with no split). */}
+                        {(Number(r.male_count ?? 0) +
+                          Number(r.female_count ?? 0) +
+                          Number(r.couple_count ?? 0)) > 0 && (
+                          <div className="text-[10px] font-mono text-slate-500 mt-0.5">
+                            {Number(r.male_count ?? 0) > 0 && (
+                              <span>{r.male_count}M</span>
+                            )}
+                            {Number(r.female_count ?? 0) > 0 && (
+                              <span>
+                                {Number(r.male_count ?? 0) > 0 ? ' · ' : ''}
+                                {r.female_count}F
+                              </span>
+                            )}
+                            {Number(r.couple_count ?? 0) > 0 && (
+                              <span>
+                                {(Number(r.male_count ?? 0) > 0 || Number(r.female_count ?? 0) > 0) ? ' · ' : ''}
+                                {r.couple_count}C
+                              </span>
+                            )}
+                          </div>
+                        )}
                         {r.total_visits != null && r.total_visits > 0 && (
                           <div className="text-[10px] text-slate-400">{ordinal(r.total_visits)} visit</div>
                         )}
@@ -694,7 +719,15 @@ function AddReservationModal({
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
-  const [pax, setPax] = useState('1');
+  // M/F/C breakdown — operator fills these three; pax auto-derives so the
+  // booked-capacity column always reflects M + F + 2C. When the operator
+  // adds a reservation for a venue that doesn't run per-category cover,
+  // putting the whole party under Male is acceptable (the columns are
+  // informational, not pricing-bearing on the manual path).
+  const [male, setMale] = useState(0);
+  const [female, setFemale] = useState(0);
+  const [couples, setCouples] = useState(0);
+  const derivedPax = male + female + couples * 2;
   const [arrivalTime, setArrivalTime] = useState('');
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
@@ -711,6 +744,10 @@ function AddReservationModal({
     if (!eventDate) { setError('Booking date is required.'); return; }
     if (!name.trim()) { setError('Name is required.'); return; }
     if (!phone) { setError('Phone is required.'); return; }
+    if (derivedPax < 1) {
+      setError('At least one guest is required — add a Male, Female, or Couple.');
+      return;
+    }
     setBusy(true);
     try {
       const res = await fetch('/api/reservations', {
@@ -724,7 +761,10 @@ function AddReservationModal({
           name: name.trim(),
           phone,
           email: email.trim() || null,
-          pax: Number(pax) || 1,
+          pax: derivedPax,
+          // M/F/C — server writes these to male_count/female_count/couple_count
+          // so the reservation row shows "2M · 1F · 1C" on the list view.
+          genderMix: { male, female, couple: couples },
           arrivalTime: arrivalTime || null,
           notes: notes.trim() || null,
         }),
@@ -790,15 +830,23 @@ function AddReservationModal({
             <label className="label">Email</label>
             <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="optional" />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Pax *</label>
-              <input className="input" type="number" min={1} value={pax} onChange={(e) => setPax(e.target.value)} />
+          <div>
+            <div className="flex items-baseline justify-between mb-1.5">
+              <label className="label !mb-0">Guest mix *</label>
+              <span className="text-[11px] text-slate-500">
+                Total: <strong className="text-slate-700">{derivedPax}</strong>{' '}
+                {derivedPax === 1 ? 'guest' : 'guests'}
+              </span>
             </div>
-            <div>
-              <label className="label">Arrival time</label>
-              <input className="input" type="time" value={arrivalTime} onChange={(e) => setArrivalTime(e.target.value)} />
+            <div className="grid grid-cols-3 gap-2">
+              <MfcStepper label="Male" value={male} onChange={setMale} />
+              <MfcStepper label="Female" value={female} onChange={setFemale} />
+              <MfcStepper label="Couple" value={couples} onChange={setCouples} sublabel="2 pax each" />
             </div>
+          </div>
+          <div>
+            <label className="label">Arrival time</label>
+            <input className="input" type="time" value={arrivalTime} onChange={(e) => setArrivalTime(e.target.value)} />
           </div>
           <div>
             <label className="label">Notes</label>
@@ -1048,3 +1096,56 @@ function ProgressRow({
     </div>
   );
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+ * MfcStepper — compact 3-column stepper used in the Add Reservation modal
+ *
+ * Renders one bordered tile with a label on top + (− N +) on the bottom.
+ * Used three times side-by-side for Male / Female / Couple. Couple takes
+ * an optional "2 pax each" sublabel so the operator knows the seat math.
+ * ──────────────────────────────────────────────────────────────────────── */
+function MfcStepper({
+  label,
+  sublabel,
+  value,
+  onChange,
+}: {
+  label: string;
+  sublabel?: string;
+  value: number;
+  onChange: (n: number) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-2 py-2 flex flex-col items-center gap-1.5">
+      <div className="text-[11px] font-semibold text-slate-700 leading-tight text-center">
+        {label}
+        {sublabel && (
+          <div className="text-[9px] font-normal text-slate-400 mt-0.5">{sublabel}</div>
+        )}
+      </div>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => onChange(Math.max(0, value - 1))}
+          disabled={value === 0}
+          aria-label={`Decrease ${label}`}
+          className="w-6 h-6 rounded border border-slate-300 text-slate-600 text-xs font-semibold hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
+        >
+          −
+        </button>
+        <span className="min-w-[20px] text-center text-sm font-semibold text-slate-900 tabular-nums">
+          {value}
+        </span>
+        <button
+          type="button"
+          onClick={() => onChange(value + 1)}
+          aria-label={`Increase ${label}`}
+          className="w-6 h-6 rounded border border-slate-300 text-slate-600 text-xs font-semibold hover:bg-slate-100 transition"
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
+

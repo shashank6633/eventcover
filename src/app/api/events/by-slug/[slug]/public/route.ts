@@ -241,6 +241,18 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ slug: stri
     platformFeePct,
     gstPercent,
     discountPercent,
+    // M/F/C per-category cover rates — exposed so the booking form can render
+    // the three-stepper UI with live per-category subtotals. These are
+    // intentionally non-secret (every patron sees them at the door anyway)
+    // and the Razorpay total is still recomputed server-side from these
+    // values in /api/payments/order — a tampered client cannot lower the
+    // charge by sending a different mix.
+    coverRates: {
+      male_stag: Number(row.cover_male_stag) || 0,
+      female_stag: Number(row.cover_female_stag) || 0,
+      couple: Number(row.cover_couple) || 0,
+    },
+    entryFeePerPerson: Number(row.entry_fee_per_person) || 0,
     // Phased Ticket Releases — see comment above.
     activePhase,
     phasePrices,

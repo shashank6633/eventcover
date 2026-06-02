@@ -101,6 +101,13 @@ interface PublicEventPayload {
   platformFeePct?: number;
   gstPercent?: number;
   discountPercent?: number;
+  /** M/F/C cover rates from event config. Zero means no per-category cover. */
+  coverRates?: {
+    male_stag?: number;
+    female_stag?: number;
+    couple?: number;
+  };
+  entryFeePerPerson?: number;
   /**
    * Phased Ticket Releases — the currently-active phase (when one is
    * configured + live). Null/omitted for legacy events with no phases.
@@ -224,6 +231,14 @@ export default async function PublicEventPage({
   const platformFeePct = Number(data.platformFeePct ?? 0) || 0;
   const gstPercent = Number(data.gstPercent ?? 0) || 0;
   const discountPercent = Number(data.discountPercent ?? 0) || 0;
+  // M/F/C — defaults all zero so events without per-category cover rates fall
+  // back to the legacy single pax input (the form checks `hasCoverRates`).
+  const coverRates = {
+    male_stag: Number(data.coverRates?.male_stag ?? 0) || 0,
+    female_stag: Number(data.coverRates?.female_stag ?? 0) || 0,
+    couple: Number(data.coverRates?.couple ?? 0) || 0,
+  };
+  const entryFeePerPerson = Number(data.entryFeePerPerson ?? 0) || 0;
   // Phased Ticket Releases — backend may not yet ship activePhase/phasePrices/
   // nextPhasePreview for older payloads; default to null/[] so legacy events
   // render the form with no banner and no price overrides (the form's
@@ -462,6 +477,8 @@ export default async function PublicEventPage({
                 activePhase={activePhase}
                 phasePrices={phasePrices}
                 nextPhasePreview={nextPhasePreview}
+                coverRates={coverRates}
+                entryFeePerPerson={entryFeePerPerson}
               />
             </>
           )}
