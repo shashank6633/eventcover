@@ -206,11 +206,12 @@ function ReservationsClient() {
     <div className="max-w-6xl mx-auto px-4 py-8">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
-          <div className="text-[11px] tracking-widest uppercase text-slate-400">Reservation sync</div>
-          <h1 className="text-2xl font-bold text-slate-900 mt-1">Reservations</h1>
+          <div className="text-[11px] tracking-widest uppercase text-slate-400">Reservation feed</div>
+          <h1 className="text-2xl font-bold text-slate-900 mt-1">Reservego</h1>
           <p className="text-sm text-slate-400 mt-1 max-w-2xl">
-            All reservations from the Reservego webhook and manual entries, in one list.
-            Filter by event or view everything together.
+            Table reservations from Reservego + manual phone bookings — name, phone and pax
+            only, no online payment. Paid bookings from your website live under{' '}
+            <a href="/admin/bookings" className="text-brand-600 hover:underline">Bookings</a>.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">

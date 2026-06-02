@@ -21,17 +21,20 @@ const NAV: NavSection[] = [
     section: 'Events',
     items: [
       { href: '/admin',                    label: 'Events',             icon: <IconCalendar />,  roles: ROLES_MGMT },
-      { href: '/admin/reservations',       label: 'Reservations',       icon: <IconInbox />,     roles: ROLES_MGMT },
-      { href: '/admin/tables',             label: 'Tables',             icon: <IconGrid />,      roles: ROLES_MGMT },
-      { href: '/admin/abandoned-bookings', label: 'Abandoned Bookings', icon: (
-        // Inline SVG — defined inline (vs a top-level Icon helper) to avoid a
-        // Fast Refresh TDZ when adding new icons mid-session.
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
-          <path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/>
-          <path d="M16 8l4 4M20 8l-4 4"/>
-        </svg>
-      ), roles: ROLES_MGMT },
+      // Bookings — global view of every payment-bearing row across every
+      // event (captured + pending + abandoned). Replaces the standalone
+      // Abandoned Bookings link, which is now a status filter on this page.
+      { href: '/admin/bookings',           label: 'Bookings',           icon: <IconTicket />,    roles: ROLES_MGMT },
+    ],
+  },
+  {
+    // Reservego — pulled out of the Events section so the user can clearly
+    // separate "we got paid online" (Bookings) from "Reservego sent us a
+    // table reservation; no payment captured here" (Reservego + Tables).
+    section: 'Reservego',
+    items: [
+      { href: '/admin/reservations', label: 'Reservego', icon: <IconInbox />, roles: ROLES_MGMT },
+      { href: '/admin/tables',       label: 'Tables',    icon: <IconGrid />,  roles: ROLES_MGMT },
     ],
   },
   {
