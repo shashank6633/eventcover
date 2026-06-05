@@ -51,6 +51,15 @@ export default function OfflineTicketingPage() {
 
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Currently selected event — used by CoverQuickPicks to surface the
+  // event's per-category cover rates as one-tap fill buttons. Null while
+  // the events list is still loading OR no event is selected (rare —
+  // useEffect above auto-picks the soonest upcoming event).
+  const selectedEvent = useMemo(
+    () => events.find((e) => e.id === eventId) ?? null,
+    [events, eventId],
+  );
+
   useEffect(() => {
     fetch('/api/events').then((r) => r.json()).then((d) => {
       if (d.ok) {
@@ -422,7 +431,24 @@ export default function OfflineTicketingPage() {
             </FormRow>
 
             <FormRow label="Ticket Price">
-              <div className="flex gap-3 items-center flex-wrap">
+              {/* Quick-pick row — auto-fills price from the SELECTED event's
+                  per-category cover rates (configured in the wizard's
+                  Tickets section). Clicking a chip also nudges the
+                  customer's gender + pax to match (Couple = 2 pax) so the
+                  operator doesn't double-enter. Hides cleanly when the
+                  selected event has all-zero cover rates (e.g. paid-online
+                  events that don't run an at-door cover model). */}
+              <CoverQuickPicks
+                event={selectedEvent}
+                disabled={complimentary}
+                onPick={({ amount, asGender, paxValue }) => {
+                  setPrice(String(amount));
+                  setPaidOffline(true);
+                  if (asGender) setGender(asGender);
+                  if (paxValue) setPax(String(paxValue));
+                }}
+              />
+              <div className="flex gap-3 items-center flex-wrap mt-2">
                 <div className="relative flex-1 min-w-[140px]">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">₹</span>
                   <input
@@ -541,4 +567,72 @@ function Star() {
 function istTodayISO(): string {
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
   return fmt.format(new Date());
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * CoverQuickPicks — per-event cover-rate chips above the Ticket Price input
+ *
+ * Pulls cover_male_stag / cover_female_stag / cover_couple from the SELECTED
+ * event's config and renders one chip per non-zero rate. Tapping a chip
+ * auto-fills the form with:
+ *   • price       = the chip's amount
+ *   • paidOffline = true (door collection is the common case here)
+ *   • gender      = 'male' | 'female' | undefined (Couple doesn't set gender)
+ *   • pax         = 2 for Couple, otherwise leaves the operator's existing value
+ *
+ * Hides cleanly when:
+ *   • No event is selected yet
+ *   • All three cover rates are 0 (e.g. paid-online-only events where the
+ *     host doesn't run an at-door cover model)
+ *   • The Complimentary checkbox is on (price input is disabled anyway)
+ *
+ * Keeps the operator in keyboard-free flow: pick event → tap "Male ₹2000"
+ * → tap Submit. No mental math, no risk of typing the wrong rate.
+ * ──────────────────────────────────────────────────────────────────────── */
+function CoverQuickPicks({
+  event,
+  disabled,
+  onPick,
+}: {
+  event: Event | null;
+  disabled?: boolean;
+  onPick: (next: { amount: number; asGender?: Gender; paxValue?: number }) => void;
+}) {
+  if (!event || disabled) return null;
+  const male = Number(event.cover_rates?.male_stag) || 0;
+  const female = Number(event.cover_rates?.female_stag) || 0;
+  const couple = Number(event.cover_rates?.couple) || 0;
+  if (male <= 0 && female <= 0 && couple <= 0) return null;
+
+  const chips: Array<{
+    key: string;
+    label: string;
+    amount: number;
+    asGender?: Gender;
+    paxValue?: number;
+  }> = [];
+  if (male > 0)   chips.push({ key: 'male',   label: 'Male',   amount: male,   asGender: 'male' });
+  if (female > 0) chips.push({ key: 'female', label: 'Female', amount: female, asGender: 'female' });
+  if (couple > 0) chips.push({ key: 'couple', label: 'Couple', amount: couple, paxValue: 2 });
+
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[11px] font-medium text-slate-500">
+        Quick pick from <span className="text-slate-700 font-semibold">{event.name}</span>'s cover rates
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {chips.map((c) => (
+          <button
+            key={c.key}
+            type="button"
+            onClick={() => onPick({ amount: c.amount, asGender: c.asGender, paxValue: c.paxValue })}
+            className="text-xs font-medium px-3 py-1.5 rounded-full border bg-white border-slate-200 text-slate-700 hover:bg-brand-50 hover:border-brand-300 hover:text-brand-800 transition"
+          >
+            {c.label} ₹{c.amount.toLocaleString('en-IN')}
+            {c.paxValue && <span className="text-[10px] text-slate-400 ml-1">(2 pax)</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
