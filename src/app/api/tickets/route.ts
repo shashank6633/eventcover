@@ -72,6 +72,11 @@ export async function POST(req: NextRequest) {
       maleCount: nn(mix.male),
       femaleCount: nn(mix.female),
       coupleCount: nn(mix.couple),
+      // Optional entry/cover split. When omitted, columns default to 0 +
+      // the wallet treats the whole price as cover (legacy single-price
+      // semantics). When supplied, sum should equal price (client enforced).
+      entryAmount: Number(body.entryAmount ?? 0),
+      coverAmount: Number(body.coverAmount ?? 0),
     });
 
     // ─── Affiliate attribution (best-effort) ──────────────────────────────
@@ -137,18 +142,27 @@ export async function POST(req: NextRequest) {
       whatsappQueued: boolean;
       kind: 'cover' | 'entry_only';
     } | null = null;
+    // Honest entry/cover split into the wallet:
+    //   - If the ticket carries the split columns (new model), pass them
+    //     through faithfully → wallet.entryFee + wallet.coverIssued audit
+    //     "venue collected ₹X entry, ₹Y is redeemable at the bar".
+    //   - If the ticket only carries `price` (legacy single-price callers),
+    //     fall back to treating the whole amount as cover so old behavior
+    //     stays intact.
+    const ticketEntry = Number(ticket.entry_amount ?? 0);
+    const ticketCover = Number(ticket.cover_amount ?? 0);
+    const hasSplit = ticketEntry > 0 || ticketCover > 0;
     try {
       const result = await issueWallet({
         name: ticket.customer_name,
         phone: ticket.customer_phone,
         pax: ticket.pax,
-        entryFee: 0,
-        coverIssued: ticket.price > 0 ? ticket.price : 0,
+        entryFee: hasSplit ? ticketEntry : 0,
+        coverIssued: hasSplit ? ticketCover : (ticket.price > 0 ? ticket.price : 0),
         // PaymentMethod enum is { cash, upi, card, online, comp }. The offline
         // form doesn't yet collect WHICH method (cash vs UPI vs card), so we
         // default paid-offline to 'cash' — the most common door payment. Comps
-        // (and ₹0 entry-only passes) map to 'comp'. A future per-row method
-        // dropdown can plumb the real method without schema work.
+        // (and ₹0 entry-only passes) map to 'comp'.
         paymentMethod: ticket.complimentary || ticket.price === 0 ? 'comp' : 'cash',
         issuedBy: session.name,
         eventId: ticket.event_id,
@@ -185,7 +199,11 @@ export async function POST(req: NextRequest) {
         // when ticket.price was 0 (comps + free events). Drives the admin
         // flash copy ("Cover ₹500 sent" vs "Entry pass sent") so the host
         // confirms the right thing was issued.
-        kind: ticket.price > 0 ? 'cover' : 'entry_only',
+        // 'cover' = QR carries redeemable balance. With the entry/cover split
+        // this is true iff coverIssued > 0 — an entry-only ticket (entry=X,
+        // cover=0) gets the 'entry_only' label so the admin flash reads
+        // honestly. Legacy single-price tickets fall back to checking price.
+        kind: (hasSplit ? ticketCover > 0 : ticket.price > 0) ? 'cover' : 'entry_only',
       };
     } catch (err) {
       // Surface the audit row but don't fail the request — the ticket is

@@ -658,6 +658,19 @@ function migrate(db: Database.Database) {
   addTicketCol('female_count', 'INTEGER DEFAULT 0');
   addTicketCol('couple_count', 'INTEGER DEFAULT 0');
 
+  // ─── Entry vs Cover split on offline tickets ────────────────────────────
+  // The single `price` column collapses both halves and can't tell the
+  // door staff how much of the wallet is redeemable at the bar. Split:
+  //   entry_amount  → sunk door fee (entry_fee_per_person × pax)
+  //                   Stored on the wallet as entryFee.
+  //   cover_amount  → redeemable bar credit (M×male_stag + F×female_stag
+  //                   + C×couple). Stored on the wallet as coverIssued.
+  //   price         → kept as the grand total (entry + cover) for
+  //                   back-compat with the existing list display.
+  // All default 0 — pre-feature rows read as 0 cleanly.
+  addTicketCol('entry_amount', 'REAL DEFAULT 0');
+  addTicketCol('cover_amount', 'REAL DEFAULT 0');
+
   // ─── Reservations: first-class data (event_id nullable + event_date col) ──
   // Originally reservations.event_id was NOT NULL, forcing every booking to
   // be tied to an existing event. That doesn't match how Reservego works:

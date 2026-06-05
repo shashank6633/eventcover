@@ -39,6 +39,15 @@ export interface TicketRow {
   male_count: number | null;
   female_count: number | null;
   couple_count: number | null;
+  // ─── Entry vs Cover split ──────────────────────────────────────────────
+  // entry_amount: sunk door fee (NOT redeemable). Stored as the wallet's
+  //               entryFee so reconciliation can audit "the venue collected
+  //               ₹X in entry on this ticket".
+  // cover_amount: redeemable bar credit. Stored as the wallet's coverIssued
+  //               so the QR pass shows this as the spendable balance.
+  // price        remains the grand total (entry + cover) for the list view.
+  entry_amount: number | null;
+  cover_amount: number | null;
 }
 
 export interface Ticket extends Omit<TicketRow, 'paid_offline' | 'complimentary'> {
@@ -101,6 +110,12 @@ export interface CreateTicketInput {
   maleCount?: number;
   femaleCount?: number;
   coupleCount?: number;
+  // Optional explicit entry/cover split. When supplied, persisted to
+  // entry_amount + cover_amount; callers responsible for sum === price.
+  // Omit to let the row store entry=0, cover=0 (legacy single-price model
+  // — price is the only number persisted, like before the split).
+  entryAmount?: number;
+  coverAmount?: number;
 }
 
 export function createTicket(input: CreateTicketInput): Ticket {
@@ -149,14 +164,21 @@ export function createTicket(input: CreateTicketInput): Ticket {
   const mc = Math.max(0, Math.floor(Number(input.maleCount ?? 0)));
   const fc = Math.max(0, Math.floor(Number(input.femaleCount ?? 0)));
   const cc = Math.max(0, Math.floor(Number(input.coupleCount ?? 0)));
+  // Entry/cover split — default to 0 each when caller doesn't pass them
+  // (legacy single-price callers). When BOTH are 0 but price > 0, the
+  // wallet auto-issue downstream treats the whole price as cover (matches
+  // the prior semantics so back-compat holds).
+  const entryAmt = Math.max(0, Number(input.entryAmount ?? 0));
+  const coverAmt = Math.max(0, Number(input.coverAmount ?? 0));
 
   db.prepare(`
     INSERT INTO tickets (
       id, event_id, guest_id, customer_name, customer_phone, customer_gender,
       customer_notes, ticket_name, category, pax, ticket_notes, internal_notes,
       price, paid_offline, complimentary, status, created_at, created_by,
-      male_count, female_count, couple_count
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?, ?, ?)
+      male_count, female_count, couple_count,
+      entry_amount, cover_amount
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, input.eventId, guestId,
     input.customerName.trim(), phone, input.customerGender ?? null,
@@ -167,6 +189,7 @@ export function createTicket(input: CreateTicketInput): Ticket {
     input.price, input.paidOffline ? 1 : 0, input.complimentary ? 1 : 0,
     Date.now(), input.createdBy,
     mc, fc, cc,
+    entryAmt, coverAmt,
   );
 
   logAudit({

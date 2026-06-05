@@ -44,18 +44,18 @@ export default function OfflineTicketingPage() {
   const [complimentary, setComplimentary] = useState(false);
 
   // M/F/C breakdown — operator counts heads per cover category. The form
-  // auto-derives pax = M + F + 2C and price = M×male_stag + F×female_stag
-  // + C×couple from the selected event's rates. Operator can still nudge
-  // the price input afterwards for unusual cases (a comped extra, a small
-  // discount); we keep that override path open.
+  // auto-derives pax = M + F + 2C, entry = entry_fee_per_person × pax (sunk
+  // door fee), and cover = M×male_stag + F×female_stag + C×couple (the
+  // redeemable bar credit). Operator can still nudge either field manually.
   const [male, setMale] = useState(0);
   const [female, setFemale] = useState(0);
   const [couples, setCouples] = useState(0);
 
-  // Manual override path — when the operator types into the price input
-  // directly, we stop overwriting it from the auto-calc. Reset to null
-  // (= "follow auto-calc") whenever M/F/C changes OR a new ticket starts.
-  const [priceOverride, setPriceOverride] = useState<string | null>(null);
+  // Manual overrides — null means "follow the auto-calc". A non-null string
+  // means the operator typed a value into that input. Steppers reset BOTH
+  // overrides so the auto-calc resumes when the head count changes.
+  const [entryOverride, setEntryOverride] = useState<string | null>(null);
+  const [coverOverride, setCoverOverride] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,14 +72,27 @@ export default function OfflineTicketingPage() {
     [events, eventId],
   );
 
-  // ── Auto-derived pax + price ──────────────────────────────────────────
-  // pax = M + F + 2C; total = M×male_stag + F×female_stag + C×couple.
-  // When the operator manually edited the price (priceOverride != null),
-  // we honor that. Complimentary ALWAYS forces price = 0 — no exceptions.
-  // pax stays derived from M/F/C even on comps because the door-list still
-  // needs the head count for capacity tracking.
+  // ── Auto-derived pax, entry, cover ────────────────────────────────────
+  // pax = M + F + 2C
+  // entry = entry_fee_per_person × pax  (event-level flat door fee, sunk)
+  // cover = M×male_stag + F×female_stag + C×couple  (redeemable at bar)
+  // total = entry + cover
+  //
+  // Complimentary ALWAYS forces both to 0 regardless of overrides — the
+  // checkbox is the authoritative "no money changes hands" signal. Pax
+  // still derives from M/F/C even on comps because the door-list needs
+  // the head count.
+  //
+  // Manual override paths stay open per field — type into Entry or Cover
+  // and the auto-calc stops overwriting that ONE field. Steppers reset
+  // both overrides so the auto-calc resumes for either.
   const derivedPax = male + female + couples * 2;
-  const autoPriceTotal = useMemo(() => {
+  const autoEntry = useMemo(() => {
+    if (!selectedEvent) return 0;
+    const rate = Number(selectedEvent.entry_fee_per_person) || 0;
+    return rate * derivedPax;
+  }, [selectedEvent, derivedPax]);
+  const autoCover = useMemo(() => {
     if (!selectedEvent) return 0;
     return (
       male * (Number(selectedEvent.cover_rates?.male_stag) || 0) +
@@ -87,18 +100,29 @@ export default function OfflineTicketingPage() {
       couples * (Number(selectedEvent.cover_rates?.couple) || 0)
     );
   }, [selectedEvent, male, female, couples]);
-  const effectivePrice = complimentary
+
+  const effectiveEntry = complimentary
     ? 0
-    : priceOverride !== null
-      ? Number(priceOverride) || 0
-      : autoPriceTotal;
-  // The form binds the price <input> to this string so the user sees the
-  // auto-calc as they tap the steppers, but can still type to override.
-  const priceInputValue = complimentary
+    : entryOverride !== null
+      ? Number(entryOverride) || 0
+      : autoEntry;
+  const effectiveCover = complimentary
+    ? 0
+    : coverOverride !== null
+      ? Number(coverOverride) || 0
+      : autoCover;
+  const effectiveTotal = effectiveEntry + effectiveCover;
+
+  const entryInputValue = complimentary
     ? '0'
-    : priceOverride !== null
-      ? priceOverride
-      : String(autoPriceTotal);
+    : entryOverride !== null
+      ? entryOverride
+      : String(autoEntry);
+  const coverInputValue = complimentary
+    ? '0'
+    : coverOverride !== null
+      ? coverOverride
+      : String(autoCover);
 
   useEffect(() => {
     fetch('/api/events').then((r) => r.json()).then((d) => {
@@ -169,7 +193,8 @@ export default function OfflineTicketingPage() {
     setPaidOffline(false);
     setComplimentary(false);
     setMale(0); setFemale(0); setCouples(0);
-    setPriceOverride(null);
+    setEntryOverride(null);
+    setCoverOverride(null);
     setPhone(''); setName(''); setGender('male'); setCustomerNotes('');
     setLookup(null);
     setStep('identifier');
@@ -180,8 +205,9 @@ export default function OfflineTicketingPage() {
     setComplimentary(next);
     if (next) {
       setPaidOffline(false);
-      // Stop respecting any manual override — comps must always be ₹0
-      setPriceOverride(null);
+      // Comps force ₹0 across the board; drop any manual edits.
+      setEntryOverride(null);
+      setCoverOverride(null);
     }
   }
 
@@ -190,12 +216,12 @@ export default function OfflineTicketingPage() {
     if (next) setComplimentary(false);
   }
 
-  // M/F/C stepper handlers — incrementing a category resets the manual
-  // price override so the auto-calc takes over again. If the operator wants
-  // to hand-edit they can do that AFTER the steppers settle.
-  function bumpMale(delta: number)   { setMale(Math.max(0, male + delta));    setPriceOverride(null); }
-  function bumpFemale(delta: number) { setFemale(Math.max(0, female + delta)); setPriceOverride(null); }
-  function bumpCouple(delta: number) { setCouples(Math.max(0, couples + delta));setPriceOverride(null); }
+  // M/F/C stepper handlers — bumping any category clears BOTH manual
+  // overrides so the auto-calc (entry × pax + cover from rates) takes
+  // over again. Operator can edit either field afterwards.
+  function bumpMale(delta: number)   { setMale(Math.max(0, male + delta));    setEntryOverride(null); setCoverOverride(null); }
+  function bumpFemale(delta: number) { setFemale(Math.max(0, female + delta)); setEntryOverride(null); setCoverOverride(null); }
+  function bumpCouple(delta: number) { setCouples(Math.max(0, couples + delta));setEntryOverride(null); setCoverOverride(null); }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -210,8 +236,13 @@ export default function OfflineTicketingPage() {
       setError('Add at least one guest (Male / Female / Couple).');
       return;
     }
-    const priceN = effectivePrice;
-    if (!(priceN >= 0)) { setError('Price must be 0 or greater.'); return; }
+    const entryN = effectiveEntry;
+    const coverN = effectiveCover;
+    const priceN = entryN + coverN; // grand total persisted on tickets.price
+    if (entryN < 0 || coverN < 0) {
+      setError('Entry and Cover charges cannot be negative.');
+      return;
+    }
     if (!phone) { setError('Mobile number is required.'); return; }
 
     const full = phone; // E.164 from PhoneInput
@@ -235,12 +266,13 @@ export default function OfflineTicketingPage() {
           price: priceN,
           paidOffline,
           complimentary,
-          // M/F/C breakdown — server persists these to male_count/female_count/
-          // couple_count + uses them for the wallet's gender-mix audit. pax +
-          // price are the AUTHORITATIVE totals (already derived on the client
-          // from M + F + 2C and M×stag + F×stag + C×couple), so the server
-          // doesn't recompute.
+          // M/F/C breakdown — persisted to male_count/female_count/couple_count.
           genderMix: { male, female, couple: couples },
+          // Entry/cover split — server stores both on the ticket row and
+          // splits them into the wallet (entryFee + coverIssued) so the QR
+          // pass shows cover as the spendable balance honestly.
+          entryAmount: entryN,
+          coverAmount: coverN,
         }),
       });
       const data = await res.json();
@@ -484,8 +516,8 @@ export default function OfflineTicketingPage() {
 
             {/* Guest mix — M/F/C steppers. Pax + cover are auto-derived from
                 M + F + 2C and the selected event's per-category cover rates.
-                Operator can still override the final price in the input
-                below (rare — handles partial discounts / extras / etc.). */}
+                Entry is auto-derived as entry_fee_per_person × pax. Operator
+                can edit either Entry or Cover individually below. */}
             <FormRow label="Guest mix">
               <MfcSteppers
                 event={selectedEvent}
@@ -493,24 +525,75 @@ export default function OfflineTicketingPage() {
                 onMale={bumpMale} onFemale={bumpFemale} onCouple={bumpCouple}
                 disabled={complimentary}
                 derivedPax={derivedPax}
-                autoTotal={autoPriceTotal}
+                autoEntry={autoEntry}
+                autoCover={autoCover}
               />
             </FormRow>
 
-            <FormRow label="Ticket Price">
-              <div className="flex gap-3 items-center flex-wrap">
-                <div className="relative flex-1 min-w-[140px]">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">₹</span>
-                  <input
-                    className="input pl-8"
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={priceInputValue}
-                    onChange={(e) => setPriceOverride(e.target.value)}
-                    disabled={complimentary}
-                  />
+            {/* Split Entry vs Cover. Entry is the sunk door fee (kept by the
+                venue, not redeemable). Cover becomes the wallet's spendable
+                balance at the bar. Each field can be edited independently;
+                changing a stepper resets both back to auto-calc. */}
+            <FormRow label="Charges">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-[11px] font-medium text-slate-500 mb-1">
+                    Entry charge <span className="text-slate-400">(door, sunk)</span>
+                  </div>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">₹</span>
+                    <input
+                      className="input pl-8"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={entryInputValue}
+                      onChange={(e) => setEntryOverride(e.target.value)}
+                      disabled={complimentary}
+                    />
+                  </div>
+                  {!complimentary && entryOverride !== null && Number(entryOverride) !== autoEntry && (
+                    <div className="text-[10px] text-amber-700 mt-1">
+                      Manual · auto-calc ₹{autoEntry.toLocaleString('en-IN')}.{' '}
+                      <button type="button" onClick={() => setEntryOverride(null)} className="underline hover:text-amber-900">Reset</button>
+                    </div>
+                  )}
                 </div>
+                <div>
+                  <div className="text-[11px] font-medium text-slate-500 mb-1">
+                    Cover charge <span className="text-slate-400">(bar credit)</span>
+                  </div>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-600">₹</span>
+                    <input
+                      className="input pl-8"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={coverInputValue}
+                      onChange={(e) => setCoverOverride(e.target.value)}
+                      disabled={complimentary}
+                    />
+                  </div>
+                  {!complimentary && coverOverride !== null && Number(coverOverride) !== autoCover && (
+                    <div className="text-[10px] text-amber-700 mt-1">
+                      Manual · auto-calc ₹{autoCover.toLocaleString('en-IN')}.{' '}
+                      <button type="button" onClick={() => setCoverOverride(null)} className="underline hover:text-amber-900">Reset</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-3 flex items-baseline justify-between border-t border-slate-100 pt-2">
+                <div className="text-xs text-slate-500">
+                  Total charged
+                </div>
+                <div className="text-base font-bold text-slate-900 font-mono">
+                  {complimentary ? '₹0' : `₹${effectiveTotal.toLocaleString('en-IN')}`}
+                </div>
+              </div>
+
+              <div className="flex gap-3 items-center flex-wrap mt-3">
                 <label className="flex items-center gap-2 cursor-pointer text-sm whitespace-nowrap">
                   <input
                     type="checkbox"
@@ -530,20 +613,9 @@ export default function OfflineTicketingPage() {
                   <span className="text-slate-700">Complimentary</span>
                 </label>
               </div>
-              {!complimentary && priceOverride !== null && Number(priceOverride) !== autoPriceTotal && (
-                <div className="text-[11px] text-amber-700 mt-1.5">
-                  Manual override — auto-calc says ₹{autoPriceTotal.toLocaleString('en-IN')}.{' '}
-                  <button
-                    type="button"
-                    onClick={() => setPriceOverride(null)}
-                    className="underline hover:text-amber-900"
-                  >
-                    Reset to auto
-                  </button>
-                </div>
-              )}
+
               {complimentary && (
-                <div className="text-[11px] text-emerald-700 mt-1.5">
+                <div className="text-[11px] text-emerald-700 mt-2">
                   Complimentary — no charge. Ticket still becomes an Entry-only QR pass.
                 </div>
               )}
@@ -685,7 +757,8 @@ function MfcSteppers({
   onMale, onFemale, onCouple,
   disabled,
   derivedPax,
-  autoTotal,
+  autoEntry,
+  autoCover,
 }: {
   event: Event | null;
   male: number; female: number; couples: number;
@@ -694,7 +767,8 @@ function MfcSteppers({
   onCouple: (delta: number) => void;
   disabled?: boolean;
   derivedPax: number;
-  autoTotal: number;
+  autoEntry: number;
+  autoCover: number;
 }) {
   if (!event) {
     return (
@@ -739,20 +813,34 @@ function MfcSteppers({
         onDec={() => onCouple(-1)} onInc={() => onCouple(+1)}
         disabled={disabled}
       />
-      <div className="border-t border-slate-200 pt-2 mt-1 flex items-baseline justify-between text-xs">
-        <div className="text-slate-500">
-          <span className="font-semibold text-slate-700">{derivedPax}</span>{' '}
-          {derivedPax === 1 ? 'guest' : 'guests'}
-        </div>
-        <div className="font-mono">
-          {disabled ? (
-            <span className="text-emerald-700 font-semibold">Complimentary · ₹0</span>
-          ) : (
-            <span className="text-slate-900 font-semibold">
-              ₹{autoTotal.toLocaleString('en-IN')}
-            </span>
+      <div className="border-t border-slate-200 pt-2 mt-1 space-y-0.5 text-xs">
+        <div className="flex items-baseline justify-between">
+          <div className="text-slate-500">
+            <span className="font-semibold text-slate-700">{derivedPax}</span>{' '}
+            {derivedPax === 1 ? 'guest' : 'guests'}
+          </div>
+          {disabled && (
+            <span className="text-emerald-700 font-semibold font-mono">Complimentary · ₹0</span>
           )}
         </div>
+        {!disabled && (
+          <>
+            <div className="flex items-baseline justify-between">
+              <div className="text-slate-500">Entry (sunk)</div>
+              <div className="font-mono text-slate-700">₹{autoEntry.toLocaleString('en-IN')}</div>
+            </div>
+            <div className="flex items-baseline justify-between">
+              <div className="text-slate-500">Cover (redeemable)</div>
+              <div className="font-mono text-emerald-700">₹{autoCover.toLocaleString('en-IN')}</div>
+            </div>
+            <div className="flex items-baseline justify-between border-t border-slate-100 pt-1 mt-0.5">
+              <div className="text-slate-700 font-semibold">Total</div>
+              <div className="font-mono text-slate-900 font-bold">
+                ₹{(autoEntry + autoCover).toLocaleString('en-IN')}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
