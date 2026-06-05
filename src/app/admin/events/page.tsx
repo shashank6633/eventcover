@@ -104,6 +104,11 @@ function EventWizard({ initialEventId, initialSection, onClose }: WizardProps) {
   function buildFullPayload(s: WizardState): Record<string, unknown> {
     return {
       name: s.name,
+      // Event category — Day / Night classification used by the customer-
+      // site grouping. Null on freshly-created drafts; wizard requires both
+      // before publish (status = 'live').
+      category_slot: s.category_slot,
+      category_label: s.category_label,
       one_line_summary: s.one_line_summary || null,
       description: s.description || null,
       event_date: s.event_date,

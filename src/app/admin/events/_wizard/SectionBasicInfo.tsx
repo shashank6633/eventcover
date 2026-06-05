@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { RichTextEditor } from '@/components/RichTextEditor';
-import type { WizardState } from './types';
+import type { WizardState, CategorySlot } from './types';
+import { DAY_CATEGORY_LABELS, NIGHT_CATEGORY_LABELS } from './types';
 
 interface Props {
   state: WizardState;
@@ -61,6 +62,28 @@ export function SectionBasicInfo({ state, onChange }: Props) {
           placeholder="e.g. Threeory Band Live at Akan"
           maxLength={150}
         />
+      </div>
+
+      {/* Event Category — Day / Night slot + label.
+          Required before publish. The customer-facing site groups events into
+          a "Day Events" rail and a "Night Events" rail using category_slot,
+          and shows category_label as the on-card chip. Two-step picker:
+            1. Pick slot (Day / Night)
+            2. Pick a preset label scoped to that slot
+          Switching slots resets the label so the picker always points at a
+          valid (slot, label) pair. */}
+      <div>
+        <label className="label">
+          Category <span className="text-rose-600">*</span>
+        </label>
+        <CategoryPicker
+          slot={state.category_slot}
+          label={state.category_label}
+          onChange={({ slot, label }) => onChange({ category_slot: slot, category_label: label })}
+        />
+        <div className="text-[11px] text-slate-400 mt-1.5">
+          Drives the Day Events / Night Events sections on your public site.
+        </div>
       </div>
 
       {/* URL Key */}
@@ -194,5 +217,115 @@ export function SectionBasicInfo({ state, onChange }: Props) {
         </div>
       )}
     </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * CategoryPicker — two-step radio: Slot (Day/Night) → Label (preset list)
+ *
+ * Renders inside SectionBasicInfo directly below Event Title. Switching the
+ * slot RESETS the label (a Day label is invalid under Night slot, etc.), so
+ * the picker never lets the user persist a (slot, label) pair that doesn't
+ * belong together.
+ *
+ * Preset lists live in ./types.ts (DAY_CATEGORY_LABELS / NIGHT_CATEGORY_LABELS)
+ * so the public site renderer can use the same source of truth when grouping.
+ * ──────────────────────────────────────────────────────────────────────── */
+function CategoryPicker({
+  slot,
+  label,
+  onChange,
+}: {
+  slot: CategorySlot | null;
+  label: string | null;
+  onChange: (next: { slot: CategorySlot | null; label: string | null }) => void;
+}) {
+  const labels: readonly string[] =
+    slot === 'day'   ? DAY_CATEGORY_LABELS :
+    slot === 'night' ? NIGHT_CATEGORY_LABELS :
+    [];
+
+  function pickSlot(next: CategorySlot) {
+    if (next === slot) return;
+    // Switching slots invalidates the label; reset to null so the operator
+    // is forced to pick again from the new list.
+    onChange({ slot: next, label: null });
+  }
+
+  return (
+    <div className="space-y-2.5">
+      {/* Step 1 — Day / Night */}
+      <div className="grid grid-cols-2 gap-2">
+        <SlotTile
+          active={slot === 'day'}
+          icon="☀️"
+          title="Day Event"
+          hint="Brunch · Workshops · Evenings"
+          onClick={() => pickSlot('day')}
+        />
+        <SlotTile
+          active={slot === 'night'}
+          icon="🌙"
+          title="Night Event"
+          hint="Live Band · DJ Night"
+          onClick={() => pickSlot('night')}
+        />
+      </div>
+
+      {/* Step 2 — preset labels (filtered to the chosen slot) */}
+      {slot && (
+        <div className="flex flex-wrap gap-1.5">
+          {labels.map((l) => {
+            const active = label === l;
+            return (
+              <button
+                key={l}
+                type="button"
+                onClick={() => onChange({ slot, label: l })}
+                className={
+                  'text-xs font-medium px-3 py-1.5 rounded-full border transition ' +
+                  (active
+                    ? 'bg-brand-50 border-brand-300 text-brand-800'
+                    : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300')
+                }
+              >
+                {l}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SlotTile({
+  active, icon, title, hint, onClick,
+}: {
+  active: boolean;
+  icon: string;
+  title: string;
+  hint: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        'rounded-lg border px-3 py-2.5 text-left transition ' +
+        (active
+          ? 'border-brand-500 bg-brand-50 ring-2 ring-brand-100'
+          : 'border-slate-200 bg-white hover:border-slate-300')
+      }
+    >
+      <div className="flex items-center gap-2">
+        <span className="text-base" aria-hidden>{icon}</span>
+        <span className={`text-sm font-semibold ${active ? 'text-brand-700' : 'text-slate-900'}`}>
+          {title}
+        </span>
+      </div>
+      <div className="text-[11px] text-slate-500 mt-0.5">{hint}</div>
+    </button>
   );
 }

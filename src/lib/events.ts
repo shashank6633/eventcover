@@ -138,6 +138,15 @@ export interface EventRow {
   seating_layout_enabled: number;
   seating_layout_svg: string | null;
   seating_layout_phases_enabled: number;
+
+  // ─── Event Category — Day / Night split + display label ─────────────────
+  // category_slot powers the customer-facing site's "Day Events" vs
+  // "Night Events" sections. category_label is the on-card chip ("Brunch",
+  // "Live Band", etc.) — validated against a preset list in the wizard UI
+  // but stored as free text so future additions don't need a schema change.
+  // Both NULL on legacy rows; the wizard requires them before publish.
+  category_slot: 'day' | 'night' | null;
+  category_label: string | null;
 }
 
 export interface Event extends Omit<EventRow,
@@ -455,6 +464,14 @@ export interface CreateEventInput {
   payment_gateway_fee_payer?: 'customer' | 'host';
   platform_fee_payer?: 'customer' | 'host';
   gst_enabled?: boolean;
+
+  // ─── Event Category — Day / Night slot + display label ──────────────────
+  // category_slot: 'day' | 'night' — drives the customer-site grouping.
+  // category_label: preset chip text (e.g. 'Brunch', 'Live Band'). The wizard
+  // validates against a preset list; storing as free text lets future presets
+  // ship without a schema change. Pass null to clear (only valid on drafts).
+  category_slot?: 'day' | 'night' | null;
+  category_label?: string | null;
 }
 
 export function createEvent(input: CreateEventInput): Event {
@@ -651,6 +668,17 @@ export function updateEvent(id: string, patch: Partial<CreateEventInput>): Event
     );
   }
   if (patch.gst_enabled != null) set('gst_enabled', patch.gst_enabled ? 1 : 0);
+
+  // Event category — validate enum on slot, free-text on label. Either may
+  // be null (allowed on drafts; the wizard blocks publish unless both set).
+  if ('category_slot' in patch) {
+    const slot = patch.category_slot;
+    set('category_slot', slot === 'day' || slot === 'night' ? slot : null);
+  }
+  if ('category_label' in patch) {
+    const lbl = patch.category_label;
+    set('category_label', typeof lbl === 'string' && lbl.trim() ? lbl.trim().slice(0, 60) : null);
+  }
 
   if (patch.payment_mode != null) {
     const m = patch.payment_mode === 'deposit' || patch.payment_mode === 'full_cover'

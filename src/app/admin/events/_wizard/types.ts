@@ -55,9 +55,32 @@ export const SECTIONS: SectionMeta[] = [
   { key: 'settings',        label: 'Settings',        description: 'Preferences & fees',           icon: 'cog',      phase: 1 },
 ];
 
+/**
+ * Event category — Day vs Night slot drives the customer-website grouping;
+ * label is the on-card chip text. Stored as two separate columns on events
+ * so future labels (e.g. "Open Mic") can be added without a schema change
+ * while the day/night split stays a strict enum.
+ *
+ * Presets exposed via DAY_CATEGORY_LABELS / NIGHT_CATEGORY_LABELS below.
+ * The wizard UI restricts selection to those; the lib validates only
+ * `slot` strictly (label accepts any non-empty string ≤ 60 chars).
+ */
+export type CategorySlot = 'day' | 'night';
+
+export const DAY_CATEGORY_LABELS = ['Brunch', 'Workshop', 'Evening Event'] as const;
+export const NIGHT_CATEGORY_LABELS = ['Live Band', 'DJ Night'] as const;
+export type CategoryLabel =
+  | (typeof DAY_CATEGORY_LABELS)[number]
+  | (typeof NIGHT_CATEGORY_LABELS)[number];
+
 export interface WizardState {
   // Basic Info
   name: string;
+  // Day / Night classification — mandatory before publish. Drives customer-
+  // site grouping ("Day Events" vs "Night Events" sections) + the on-card
+  // category chip. Both null on freshly-created drafts.
+  category_slot: CategorySlot | null;
+  category_label: string | null;
   one_line_summary: string;  // Max 100 chars, shown in event previews + ad previews
   description: string;       // HTML
   slug: string;              // URL-friendly identifier; auto-generated server-side when blank
@@ -172,6 +195,8 @@ export interface WizardState {
 
 export const EMPTY_STATE: WizardState = {
   name: '',
+  category_slot: null,
+  category_label: null,
   one_line_summary: '',
   description: '',
   image_data: null,
@@ -214,8 +239,15 @@ export const EMPTY_STATE: WizardState = {
 };
 
 export function hydrateFromEvent(e: Event): WizardState {
+  // Cast: category_slot / category_label were added to the events table
+  // (and the Event type) after the wizard shipped; older snapshots may not
+  // carry them. Treat missing as nulls and let the wizard require them
+  // before publish.
+  const ec = e as unknown as { category_slot?: 'day' | 'night' | null; category_label?: string | null };
   return {
     name: e.name,
+    category_slot: ec.category_slot === 'day' || ec.category_slot === 'night' ? ec.category_slot : null,
+    category_label: ec.category_label || null,
     one_line_summary:
       (e as unknown as { one_line_summary?: string | null }).one_line_summary ?? '',
     description: e.description ?? '',
@@ -318,7 +350,16 @@ export function hydrateFromEvent(e: Event): WizardState {
  */
 export function getIncompleteSections(s: WizardState): SectionKey[] {
   const out: SectionKey[] = [];
-  if (!s.name.trim() || !s.description.trim()) out.push('basic_info');
+  if (
+    !s.name.trim() ||
+    !s.description.trim() ||
+    // Category is mandatory — both slot AND a label are required so the
+    // customer site can group the event correctly. We don't error on label
+    // shape (any non-empty string is valid for forward-compat with future
+    // presets), just on presence.
+    !s.category_slot ||
+    !s.category_label
+  ) out.push('basic_info');
   if (!s.event_date) out.push('schedule');
   if (
     s.entry_fee_per_person <= 0 &&

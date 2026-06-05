@@ -893,6 +893,20 @@ function migrate(db: Database.Database) {
   // behave exactly as before this feature shipped.
   addEvCol('reservego_auto_prepay', 'INTEGER DEFAULT 0');
 
+  // ─── Event Category — Day / Night grouping for the public website ─────
+  // Two-column structure (rather than a single enum) because the public
+  // event listings group by category_slot (Day vs Night sections) but
+  // display category_label (Brunch / Workshop / Evening / Live Band / DJ
+  // Night) on the card. Decoupling them lets the host pick a label that
+  // doesn't exist in our preset list without breaking the day/night split.
+  //
+  // category_slot: 'day' | 'night' | NULL  (NULL on legacy rows so the
+  //                                          UI can require it on publish
+  //                                          without retroactively failing)
+  // category_label: free-text label, validated against a preset list in UI.
+  addEvCol('category_slot',  'TEXT');
+  addEvCol('category_label', 'TEXT');
+
   // event_invitees — phone-list mode entries. Phones are stored already
   // normalized via normalizePhone(). Unique-per-event so the same phone
   // can be invited to different events. used flips to 1 inside the same
