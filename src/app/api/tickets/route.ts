@@ -94,10 +94,23 @@ export async function POST(req: NextRequest) {
     }
 
     // ─── Auto-issue wallet pass + WhatsApp the QR ─────────────────────────
-    // Every offline ticket (including comps) gets a wallet so the guest can
-    // show their QR at the door. For paid tickets the wallet starts with
-    // balance = price (the ticket price IS the redeemable cover); for
-    // complimentary tickets the wallet starts at ₹0 (entry-only pass).
+    // Every offline ticket gets a wallet so the guest can show their QR at
+    // the door. The semantic split for what that wallet contains:
+    //
+    //   ticket.price > 0  → cover-bearing pass
+    //                       entryFee = 0, coverIssued = price
+    //                       Whole ticket amount is redeemable at the bar.
+    //                       Wallet balance = price.
+    //
+    //   ticket.price = 0  → entry-only pass (comps OR free events)
+    //                       entryFee = 0, coverIssued = 0
+    //                       QR works for door verification, but there's
+    //                       nothing to redeem. Bouncer sees ₹0 balance.
+    //
+    // Note we set entryFee = 0 in BOTH cases. The historical entryFee
+    // field on the wallet row represents a sunk (non-redeemable) door
+    // charge — we don't have that concept in the offline-tickets flow.
+    // The whole ticket price is treated as cover.
     //
     // Failures here MUST NOT roll the ticket back — the operator's intent
     // ("ticket sold") is already captured. If wallet issuance fails (e.g.
@@ -110,22 +123,21 @@ export async function POST(req: NextRequest) {
       balance: number;
       expiresAt: number;
       whatsappQueued: boolean;
+      kind: 'cover' | 'entry_only';
     } | null = null;
     try {
       const result = await issueWallet({
         name: ticket.customer_name,
         phone: ticket.customer_phone,
         pax: ticket.pax,
-        // entryFee = ticket price — comps land here with 0; issueWallet
-        // defaults coverIssued to entryFee so balance starts at price.
-        entryFee: ticket.price,
-        coverIssued: ticket.price,
+        entryFee: 0,
+        coverIssued: ticket.price > 0 ? ticket.price : 0,
         // PaymentMethod enum is { cash, upi, card, online, comp }. The offline
         // form doesn't yet collect WHICH method (cash vs UPI vs card), so we
         // default paid-offline to 'cash' — the most common door payment. Comps
-        // map cleanly to 'comp'. A future per-row method dropdown can plumb
-        // the real method here without schema work.
-        paymentMethod: ticket.complimentary ? 'comp' : 'cash',
+        // (and ₹0 entry-only passes) map to 'comp'. A future per-row method
+        // dropdown can plumb the real method without schema work.
+        paymentMethod: ticket.complimentary || ticket.price === 0 ? 'comp' : 'cash',
         issuedBy: session.name,
         eventId: ticket.event_id,
       });
@@ -157,6 +169,11 @@ export async function POST(req: NextRequest) {
         balance: result.balance,
         expiresAt: result.expiresAt,
         whatsappQueued,
+        // 'cover' when the wallet carries redeemable balance; 'entry_only'
+        // when ticket.price was 0 (comps + free events). Drives the admin
+        // flash copy ("Cover ₹500 sent" vs "Entry pass sent") so the host
+        // confirms the right thing was issued.
+        kind: ticket.price > 0 ? 'cover' : 'entry_only',
       };
     } catch (err) {
       // Surface the audit row but don't fail the request — the ticket is

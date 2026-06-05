@@ -179,17 +179,32 @@ export default function OfflineTicketingPage() {
       const data = await res.json();
       if (!data.ok) { setError(data.message); return; }
       // Build a one-line flash that surfaces BOTH the ticket save AND the
-      // auto-issued wallet status. Three branches:
-      //   - wallet issued + WhatsApp queued → "Ticket issued + QR sent to ${phone}"
-      //   - wallet issued, no WhatsApp     → "Ticket issued · QR Code ID: ${pin}"
-      //                                       (host can flip AUTO_SEND_WHATSAPP_PASS)
-      //   - wallet missing                  → "Ticket issued (wallet pending — issue manually)"
-      const w = data.wallet as { pin?: string; whatsappQueued?: boolean } | null;
+      // auto-issued wallet status. The wallet kind ('cover' | 'entry_only')
+      // determines whether the QR carries a redeemable balance or just door
+      // entry — copy reflects that so the host confirms they issued the
+      // right kind.
+      //
+      // Branch matrix:
+      //   - cover + WhatsApp queued      → "Cover ₹X sent on WhatsApp"
+      //   - cover + WhatsApp off         → "Cover ₹X · QR Code ID NNNN"
+      //   - entry_only + WhatsApp queued → "Entry pass sent on WhatsApp"
+      //   - entry_only + WhatsApp off    → "Entry pass · QR Code ID NNNN"
+      //   - wallet missing               → "wallet pending — issue manually"
+      const w = data.wallet as {
+        pin?: string;
+        balance?: number;
+        whatsappQueued?: boolean;
+        kind?: 'cover' | 'entry_only';
+      } | null;
       let flash = `✓ Ticket "${data.ticket.ticket_name}" issued to ${data.ticket.customer_name}`;
       if (w?.pin) {
+        const isCover = w.kind === 'cover';
+        const label = isCover
+          ? `Cover ₹${(w.balance ?? 0).toLocaleString('en-IN')}`
+          : 'Entry pass';
         flash += w.whatsappQueued
-          ? ` · QR pass sent on WhatsApp`
-          : ` · QR Code ID ${w.pin.slice(-4)}`;
+          ? ` · ${label} sent on WhatsApp`
+          : ` · ${label} · QR Code ID ${w.pin.slice(-4)}`;
       } else {
         flash += ` (wallet not auto-issued — visit Issue Cover)`;
       }
