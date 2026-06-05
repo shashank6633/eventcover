@@ -637,6 +637,17 @@ function migrate(db: Database.Database) {
   addTicketCol('commission_amount', 'REAL');
   addTicketCol('commission_status', 'TEXT');
 
+  // ─── Offline ticket → wallet bridge ─────────────────────────────────────
+  // When the host issues an offline ticket via /admin/tickets we now also
+  // auto-issue a wallet pass (QR + PIN) and WhatsApp it to the guest, so
+  // the ticket itself doubles as the entry pass. This column stores the
+  // wallets.txn_id of that auto-issued pass so we can:
+  //   • Show "WhatsApp sent ✓" status next to the ticket in the admin list
+  //   • Resend the pass without creating a duplicate wallet
+  //   • Reconcile ticket revenue ↔ door-scan stats
+  // NULL on rows issued before this feature shipped.
+  addTicketCol('wallet_txn_id', 'TEXT');
+
   // ─── Reservations: first-class data (event_id nullable + event_date col) ──
   // Originally reservations.event_id was NOT NULL, forcing every booking to
   // be tied to an existing event. That doesn't match how Reservego works:

@@ -178,7 +178,23 @@ export default function OfflineTicketingPage() {
       });
       const data = await res.json();
       if (!data.ok) { setError(data.message); return; }
-      showFlash(`✓ Ticket "${data.ticket.ticket_name}" issued to ${data.ticket.customer_name}.`);
+      // Build a one-line flash that surfaces BOTH the ticket save AND the
+      // auto-issued wallet status. Three branches:
+      //   - wallet issued + WhatsApp queued → "Ticket issued + QR sent to ${phone}"
+      //   - wallet issued, no WhatsApp     → "Ticket issued · QR Code ID: ${pin}"
+      //                                       (host can flip AUTO_SEND_WHATSAPP_PASS)
+      //   - wallet missing                  → "Ticket issued (wallet pending — issue manually)"
+      const w = data.wallet as { pin?: string; whatsappQueued?: boolean } | null;
+      let flash = `✓ Ticket "${data.ticket.ticket_name}" issued to ${data.ticket.customer_name}`;
+      if (w?.pin) {
+        flash += w.whatsappQueued
+          ? ` · QR pass sent on WhatsApp`
+          : ` · QR Code ID ${w.pin.slice(-4)}`;
+      } else {
+        flash += ` (wallet not auto-issued — visit Issue Cover)`;
+      }
+      flash += '.';
+      showFlash(flash);
       resetForm();
       refreshTickets();
     } catch (err) {

@@ -1,8 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { listTicketsForEvent, createTicket, getTicket, type TicketCategory, type Gender } from '@/lib/tickets';
+import {
+  listTicketsForEvent,
+  createTicket,
+  getTicket,
+  attachWalletToTicket,
+  type TicketCategory,
+  type Gender,
+} from '@/lib/tickets';
 import { attributeTicket } from '@/lib/affiliates';
 import { requireRole } from '@/lib/auth';
 import { getEvent } from '@/lib/events';
+import { issueWallet } from '@/lib/wallet';
+import { getConfig } from '@/lib/db';
+import { sendWalletPassWhatsApp } from '@/lib/whatsapp/wallet-pass-send';
+import { logAudit } from '@/lib/audit';
 import {
   getEffectivePixelId,
   getCapiAccessToken,
@@ -82,6 +93,87 @@ export async function POST(req: NextRequest) {
       finalTicket = getTicket(ticket.id) ?? ticket;
     }
 
+    // ─── Auto-issue wallet pass + WhatsApp the QR ─────────────────────────
+    // Every offline ticket (including comps) gets a wallet so the guest can
+    // show their QR at the door. For paid tickets the wallet starts with
+    // balance = price (the ticket price IS the redeemable cover); for
+    // complimentary tickets the wallet starts at ₹0 (entry-only pass).
+    //
+    // Failures here MUST NOT roll the ticket back — the operator's intent
+    // ("ticket sold") is already captured. If wallet issuance fails (e.g.
+    // event has no event_date, EVENT_DATE config missing), the audit row
+    // surfaces the reason and the operator can manually issue via
+    // /admin/issue. Same fire-and-forget pattern as POST /api/wallets.
+    let walletInfo: {
+      txnId: string;
+      pin: string;
+      balance: number;
+      expiresAt: number;
+      whatsappQueued: boolean;
+    } | null = null;
+    try {
+      const result = await issueWallet({
+        name: ticket.customer_name,
+        phone: ticket.customer_phone,
+        pax: ticket.pax,
+        // entryFee = ticket price — comps land here with 0; issueWallet
+        // defaults coverIssued to entryFee so balance starts at price.
+        entryFee: ticket.price,
+        coverIssued: ticket.price,
+        // PaymentMethod enum is { cash, upi, card, online, comp }. The offline
+        // form doesn't yet collect WHICH method (cash vs UPI vs card), so we
+        // default paid-offline to 'cash' — the most common door payment. Comps
+        // map cleanly to 'comp'. A future per-row method dropdown can plumb
+        // the real method here without schema work.
+        paymentMethod: ticket.complimentary ? 'comp' : 'cash',
+        issuedBy: session.name,
+        eventId: ticket.event_id,
+      });
+      attachWalletToTicket(ticket.id, result.txnId);
+      finalTicket = getTicket(ticket.id) ?? finalTicket;
+
+      // Fire WhatsApp send if the global toggle is on. Same gating as the
+      // /admin/issue door flow — host can flip AUTO_SEND_WHATSAPP_PASS to '0'
+      // to suppress (useful for comp guest lists where you don't want
+      // bulk WhatsApps going out).
+      let whatsappQueued = false;
+      const autoSend = getConfig('AUTO_SEND_WHATSAPP_PASS', '0').trim();
+      if (autoSend === '1' || autoSend.toLowerCase() === 'true') {
+        whatsappQueued = true;
+        const origin = req.nextUrl.origin;
+        // Fire-and-forget: never block the API response on Interakt latency.
+        // Errors are logged via the audit row inside sendWalletPassWhatsApp.
+        sendWalletPassWhatsApp({
+          txnId: result.txnId,
+          origin,
+          qrCodeId: result.pin.slice(-4),
+          actor: session.name,
+        }).catch(() => { /* never block ticket create */ });
+      }
+
+      walletInfo = {
+        txnId: result.txnId,
+        pin: result.pin,
+        balance: result.balance,
+        expiresAt: result.expiresAt,
+        whatsappQueued,
+      };
+    } catch (err) {
+      // Surface the audit row but don't fail the request — the ticket is
+      // saved and the operator can issue the wallet manually if needed.
+      logAudit({
+        actor: session.name,
+        action: 'offline_ticket_auto_wallet_failed',
+        entityType: 'ticket',
+        entityId: ticket.id,
+        details: {
+          message: err instanceof Error ? err.message : 'Failed to auto-issue wallet.',
+          event_id: ticket.event_id,
+          phone: ticket.customer_phone,
+        },
+      });
+    }
+
     // ─── Meta CAPI Purchase (fire-and-forget) ─────────────────────────────
     // Only fires when the customer's browser came in with FB cookies AND
     // CAPI is fully configured. The browser Pixel snippet may also be
@@ -125,7 +217,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ ok: true, ticket: finalTicket });
+    return NextResponse.json({
+      ok: true,
+      ticket: finalTicket,
+      // wallet is null when auto-issue failed (audited but non-fatal) OR
+      // wasn't attempted. Admin form uses this to render the "✓ Pass sent"
+      // flash with the QR Code ID + WhatsApp delivery status.
+      wallet: walletInfo,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to create ticket.';
     return NextResponse.json({ ok: false, message: msg }, { status: 400 });

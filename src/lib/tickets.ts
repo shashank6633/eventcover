@@ -26,11 +26,27 @@ export interface TicketRow {
   status: TicketStatus;
   created_at: number;
   created_by: string | null;
+  // Auto-issued wallet pass txn id. Set by the offline-ticketing flow when
+  // a wallet is issued alongside the ticket so the QR pass can be sent to
+  // the guest's WhatsApp. NULL on rows created before this feature shipped
+  // OR when wallet auto-issue is disabled.
+  wallet_txn_id: string | null;
 }
 
 export interface Ticket extends Omit<TicketRow, 'paid_offline' | 'complimentary'> {
   paid_offline: boolean;
   complimentary: boolean;
+}
+
+/**
+ * Set the wallet_txn_id back on a ticket row after the wallet has been
+ * issued. Called by the /api/tickets route once issueWallet() succeeds
+ * so the linkage is auditable + future "resend pass" calls can find the
+ * existing wallet instead of issuing a duplicate.
+ */
+export function attachWalletToTicket(ticketId: string, walletTxnId: string): void {
+  const db = getDb();
+  db.prepare('UPDATE tickets SET wallet_txn_id = ? WHERE id = ?').run(walletTxnId, ticketId);
 }
 
 function toTicket(row: TicketRow): Ticket {
