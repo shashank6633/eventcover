@@ -31,6 +31,14 @@ export interface TicketRow {
   // the guest's WhatsApp. NULL on rows created before this feature shipped
   // OR when wallet auto-issue is disabled.
   wallet_txn_id: string | null;
+  // ─── M/F/C breakdown for parties with mixed cover categories ───────────
+  // pax + price on this row already reflect the totals computed from these
+  // counts × event.cover_rates. Stored separately so the door-staff list
+  // can render "2M · 1F · 1C" and so future reconciliation can audit
+  // "this ticket was for a Table-of-4 split 2M+2F".
+  male_count: number | null;
+  female_count: number | null;
+  couple_count: number | null;
 }
 
 export interface Ticket extends Omit<TicketRow, 'paid_offline' | 'complimentary'> {
@@ -86,6 +94,13 @@ export interface CreateTicketInput {
   paidOffline: boolean;
   complimentary: boolean;
   createdBy: string;
+  // Optional M/F/C breakdown. When provided, pax + price on the row
+  // already reflect the totals (caller is responsible). Stored as-is so
+  // the admin list + audit can render the per-category split. All three
+  // default 0 — back-compat with callers that don't supply them.
+  maleCount?: number;
+  femaleCount?: number;
+  coupleCount?: number;
 }
 
 export function createTicket(input: CreateTicketInput): Ticket {
@@ -126,12 +141,22 @@ export function createTicket(input: CreateTicketInput): Ticket {
     `).run(guestId, input.customerName.trim(), phone, input.pax, Date.now());
   }
 
+  // M/F/C breakdown — non-negative ints. Callers that don't supply them
+  // (legacy admin scripts) write zeros and read back as zero, which renders
+  // as no pill in the list. The pax + price coming in are already the totals;
+  // we do NOT recompute here — that math is the caller's responsibility so
+  // the ticket reflects exactly what the operator confirmed at submit.
+  const mc = Math.max(0, Math.floor(Number(input.maleCount ?? 0)));
+  const fc = Math.max(0, Math.floor(Number(input.femaleCount ?? 0)));
+  const cc = Math.max(0, Math.floor(Number(input.coupleCount ?? 0)));
+
   db.prepare(`
     INSERT INTO tickets (
       id, event_id, guest_id, customer_name, customer_phone, customer_gender,
       customer_notes, ticket_name, category, pax, ticket_notes, internal_notes,
-      price, paid_offline, complimentary, status, created_at, created_by
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?)
+      price, paid_offline, complimentary, status, created_at, created_by,
+      male_count, female_count, couple_count
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?, ?, ?)
   `).run(
     id, input.eventId, guestId,
     input.customerName.trim(), phone, input.customerGender ?? null,
@@ -141,6 +166,7 @@ export function createTicket(input: CreateTicketInput): Ticket {
     (input.internalNotes ?? '').trim() || null,
     input.price, input.paidOffline ? 1 : 0, input.complimentary ? 1 : 0,
     Date.now(), input.createdBy,
+    mc, fc, cc,
   );
 
   logAudit({

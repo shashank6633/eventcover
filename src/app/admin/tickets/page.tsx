@@ -38,12 +38,24 @@ export default function OfflineTicketingPage() {
   // Ticket state
   const [ticketName, setTicketName] = useState('');
   const [category, setCategory] = useState<TicketCategory>('guest_list');
-  const [pax, setPax] = useState('1');
   const [ticketNotes, setTicketNotes] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
-  const [price, setPrice] = useState('0');
   const [paidOffline, setPaidOffline] = useState(false);
   const [complimentary, setComplimentary] = useState(false);
+
+  // M/F/C breakdown — operator counts heads per cover category. The form
+  // auto-derives pax = M + F + 2C and price = M×male_stag + F×female_stag
+  // + C×couple from the selected event's rates. Operator can still nudge
+  // the price input afterwards for unusual cases (a comped extra, a small
+  // discount); we keep that override path open.
+  const [male, setMale] = useState(0);
+  const [female, setFemale] = useState(0);
+  const [couples, setCouples] = useState(0);
+
+  // Manual override path — when the operator types into the price input
+  // directly, we stop overwriting it from the auto-calc. Reset to null
+  // (= "follow auto-calc") whenever M/F/C changes OR a new ticket starts.
+  const [priceOverride, setPriceOverride] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +71,34 @@ export default function OfflineTicketingPage() {
     () => events.find((e) => e.id === eventId) ?? null,
     [events, eventId],
   );
+
+  // ── Auto-derived pax + price ──────────────────────────────────────────
+  // pax = M + F + 2C; total = M×male_stag + F×female_stag + C×couple.
+  // When the operator manually edited the price (priceOverride != null),
+  // we honor that. Complimentary ALWAYS forces price = 0 — no exceptions.
+  // pax stays derived from M/F/C even on comps because the door-list still
+  // needs the head count for capacity tracking.
+  const derivedPax = male + female + couples * 2;
+  const autoPriceTotal = useMemo(() => {
+    if (!selectedEvent) return 0;
+    return (
+      male * (Number(selectedEvent.cover_rates?.male_stag) || 0) +
+      female * (Number(selectedEvent.cover_rates?.female_stag) || 0) +
+      couples * (Number(selectedEvent.cover_rates?.couple) || 0)
+    );
+  }, [selectedEvent, male, female, couples]);
+  const effectivePrice = complimentary
+    ? 0
+    : priceOverride !== null
+      ? Number(priceOverride) || 0
+      : autoPriceTotal;
+  // The form binds the price <input> to this string so the user sees the
+  // auto-calc as they tap the steppers, but can still type to override.
+  const priceInputValue = complimentary
+    ? '0'
+    : priceOverride !== null
+      ? priceOverride
+      : String(autoPriceTotal);
 
   useEffect(() => {
     fetch('/api/events').then((r) => r.json()).then((d) => {
@@ -124,12 +164,12 @@ export default function OfflineTicketingPage() {
   function resetForm() {
     setTicketName('');
     setCategory('guest_list');
-    setPax('1');
     setTicketNotes('');
     setInternalNotes('');
-    setPrice('0');
     setPaidOffline(false);
     setComplimentary(false);
+    setMale(0); setFemale(0); setCouples(0);
+    setPriceOverride(null);
     setPhone(''); setName(''); setGender('male'); setCustomerNotes('');
     setLookup(null);
     setStep('identifier');
@@ -140,7 +180,8 @@ export default function OfflineTicketingPage() {
     setComplimentary(next);
     if (next) {
       setPaidOffline(false);
-      setPrice('0');
+      // Stop respecting any manual override — comps must always be ₹0
+      setPriceOverride(null);
     }
   }
 
@@ -149,6 +190,13 @@ export default function OfflineTicketingPage() {
     if (next) setComplimentary(false);
   }
 
+  // M/F/C stepper handlers — incrementing a category resets the manual
+  // price override so the auto-calc takes over again. If the operator wants
+  // to hand-edit they can do that AFTER the steppers settle.
+  function bumpMale(delta: number)   { setMale(Math.max(0, male + delta));    setPriceOverride(null); }
+  function bumpFemale(delta: number) { setFemale(Math.max(0, female + delta)); setPriceOverride(null); }
+  function bumpCouple(delta: number) { setCouples(Math.max(0, couples + delta));setPriceOverride(null); }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -156,9 +204,13 @@ export default function OfflineTicketingPage() {
     if (!eventId) { setError('Select an event.'); return; }
     if (!name.trim()) { setError('Customer name is required.'); return; }
     if (!ticketName.trim()) { setError('Ticket name is required.'); return; }
-    const paxN = Number(pax);
-    if (!(paxN >= 1)) { setError('PAX must be at least 1.'); return; }
-    const priceN = Number(price);
+    // Pax comes from M/F/C derivation now. Submit requires at least one head.
+    const paxN = derivedPax;
+    if (!(paxN >= 1)) {
+      setError('Add at least one guest (Male / Female / Couple).');
+      return;
+    }
+    const priceN = effectivePrice;
     if (!(priceN >= 0)) { setError('Price must be 0 or greater.'); return; }
     if (!phone) { setError('Mobile number is required.'); return; }
 
@@ -183,6 +235,12 @@ export default function OfflineTicketingPage() {
           price: priceN,
           paidOffline,
           complimentary,
+          // M/F/C breakdown — server persists these to male_count/female_count/
+          // couple_count + uses them for the wallet's gender-mix audit. pax +
+          // price are the AUTHORITATIVE totals (already derived on the client
+          // from M + F + 2C and M×stag + F×stag + C×couple), so the server
+          // doesn't recompute.
+          genderMix: { male, female, couple: couples },
         }),
       });
       const data = await res.json();
@@ -402,15 +460,9 @@ export default function OfflineTicketingPage() {
               </div>
             </FormRow>
 
-            <FormRow label="PAX">
-              <input
-                className="input"
-                type="number"
-                min={1}
-                value={pax}
-                onChange={(e) => setPax(e.target.value)}
-              />
-            </FormRow>
+            {/* PAX is auto-derived from M + F + 2C above — removed the
+                input entirely so the operator can't enter an inconsistent
+                value. The Guest Mix row already shows the running total. */}
 
             <FormRow label="Ticket Notes">
               <input
@@ -430,25 +482,23 @@ export default function OfflineTicketingPage() {
               />
             </FormRow>
 
-            <FormRow label="Ticket Price">
-              {/* Quick-pick row — auto-fills price from the SELECTED event's
-                  per-category cover rates (configured in the wizard's
-                  Tickets section). Clicking a chip also nudges the
-                  customer's gender + pax to match (Couple = 2 pax) so the
-                  operator doesn't double-enter. Hides cleanly when the
-                  selected event has all-zero cover rates (e.g. paid-online
-                  events that don't run an at-door cover model). */}
-              <CoverQuickPicks
+            {/* Guest mix — M/F/C steppers. Pax + cover are auto-derived from
+                M + F + 2C and the selected event's per-category cover rates.
+                Operator can still override the final price in the input
+                below (rare — handles partial discounts / extras / etc.). */}
+            <FormRow label="Guest mix">
+              <MfcSteppers
                 event={selectedEvent}
+                male={male} female={female} couples={couples}
+                onMale={bumpMale} onFemale={bumpFemale} onCouple={bumpCouple}
                 disabled={complimentary}
-                onPick={({ amount, asGender, paxValue }) => {
-                  setPrice(String(amount));
-                  setPaidOffline(true);
-                  if (asGender) setGender(asGender);
-                  if (paxValue) setPax(String(paxValue));
-                }}
+                derivedPax={derivedPax}
+                autoTotal={autoPriceTotal}
               />
-              <div className="flex gap-3 items-center flex-wrap mt-2">
+            </FormRow>
+
+            <FormRow label="Ticket Price">
+              <div className="flex gap-3 items-center flex-wrap">
                 <div className="relative flex-1 min-w-[140px]">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">₹</span>
                   <input
@@ -456,8 +506,8 @@ export default function OfflineTicketingPage() {
                     type="number"
                     min={0}
                     step="0.01"
-                    value={price}
-                    onChange={(e) => setPrice(e.target.value)}
+                    value={priceInputValue}
+                    onChange={(e) => setPriceOverride(e.target.value)}
                     disabled={complimentary}
                   />
                 </div>
@@ -480,6 +530,23 @@ export default function OfflineTicketingPage() {
                   <span className="text-slate-700">Complimentary</span>
                 </label>
               </div>
+              {!complimentary && priceOverride !== null && Number(priceOverride) !== autoPriceTotal && (
+                <div className="text-[11px] text-amber-700 mt-1.5">
+                  Manual override — auto-calc says ₹{autoPriceTotal.toLocaleString('en-IN')}.{' '}
+                  <button
+                    type="button"
+                    onClick={() => setPriceOverride(null)}
+                    className="underline hover:text-amber-900"
+                  >
+                    Reset to auto
+                  </button>
+                </div>
+              )}
+              {complimentary && (
+                <div className="text-[11px] text-emerald-700 mt-1.5">
+                  Complimentary — no charge. Ticket still becomes an Entry-only QR pass.
+                </div>
+              )}
             </FormRow>
 
             <div className="flex gap-3 pt-2">
@@ -531,7 +598,28 @@ export default function OfflineTicketingPage() {
                     <td className="py-2.5 text-slate-500 text-xs uppercase whitespace-nowrap">
                       {t.category === 'guest_list' ? 'Guest list' : 'Walk-in'}
                     </td>
-                    <td className="py-2.5 text-right text-slate-700">{t.pax}</td>
+                    <td className="py-2.5 text-right text-slate-700">
+                      <div>{t.pax}</div>
+                      {/* M/F/C pill — renders only when at least one category
+                          counter was set on this ticket. Keeps the column
+                          quiet for legacy / pre-feature rows. */}
+                      {(Number(t.male_count ?? 0) +
+                        Number(t.female_count ?? 0) +
+                        Number(t.couple_count ?? 0)) > 0 && (
+                        <div className="text-[10px] font-mono text-slate-500 mt-0.5">
+                          {Number(t.male_count ?? 0) > 0 && <span>{t.male_count}M</span>}
+                          {Number(t.female_count ?? 0) > 0 && (
+                            <span>{Number(t.male_count ?? 0) > 0 ? ' · ' : ''}{t.female_count}F</span>
+                          )}
+                          {Number(t.couple_count ?? 0) > 0 && (
+                            <span>
+                              {(Number(t.male_count ?? 0) > 0 || Number(t.female_count ?? 0) > 0) ? ' · ' : ''}
+                              {t.couple_count}C
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </td>
                     <td className="py-2.5 text-right text-slate-700 whitespace-nowrap">
                       {t.complimentary ? <span className="text-amber-700">Comp</span> : formatMoney(t.price)}
                     </td>
@@ -570,68 +658,143 @@ function istTodayISO(): string {
 }
 
 /* ────────────────────────────────────────────────────────────────────────
- * CoverQuickPicks — per-event cover-rate chips above the Ticket Price input
+ * MfcSteppers — Male / Female / Couple counters with auto-calc summary
  *
- * Pulls cover_male_stag / cover_female_stag / cover_couple from the SELECTED
- * event's config and renders one chip per non-zero rate. Tapping a chip
- * auto-fills the form with:
- *   • price       = the chip's amount
- *   • paidOffline = true (door collection is the common case here)
- *   • gender      = 'male' | 'female' | undefined (Couple doesn't set gender)
- *   • pax         = 2 for Couple, otherwise leaves the operator's existing value
+ * Replaces the single-chip quick-pick UI with a three-stepper layout that
+ * mirrors the public booking form. Each stepper:
+ *   • Shows the category label + the per-head cover rate from the SELECTED
+ *     event (e.g. "Male · ₹2000 per person")
+ *   • Has − / + buttons + a number readout
+ *   • Shows a running line subtotal (count × rate) so the operator sees
+ *     "2 × ₹2000 = ₹4000" at a glance
  *
- * Hides cleanly when:
- *   • No event is selected yet
- *   • All three cover rates are 0 (e.g. paid-online-only events where the
- *     host doesn't run an at-door cover model)
- *   • The Complimentary checkbox is on (price input is disabled anyway)
+ * Summary strip at the bottom shows the totals the form will submit:
+ *   PAX   = M + F + 2C
+ *   COVER = M × male_stag + F × female_stag + C × couple
  *
- * Keeps the operator in keyboard-free flow: pick event → tap "Male ₹2000"
- * → tap Submit. No mental math, no risk of typing the wrong rate.
+ * When `disabled` (Complimentary checkbox is on) the steppers grey out and
+ * the cover total visually shows "Complimentary — ₹0" so the operator can
+ * tell at a glance that this ticket is comped even if the counts are set.
+ *
+ * Hides entirely when no event is selected OR the event has zero cover
+ * rates across all three categories (e.g. paid-online-only events).
  * ──────────────────────────────────────────────────────────────────────── */
-function CoverQuickPicks({
+function MfcSteppers({
   event,
+  male, female, couples,
+  onMale, onFemale, onCouple,
   disabled,
-  onPick,
+  derivedPax,
+  autoTotal,
 }: {
   event: Event | null;
+  male: number; female: number; couples: number;
+  onMale: (delta: number) => void;
+  onFemale: (delta: number) => void;
+  onCouple: (delta: number) => void;
   disabled?: boolean;
-  onPick: (next: { amount: number; asGender?: Gender; paxValue?: number }) => void;
+  derivedPax: number;
+  autoTotal: number;
 }) {
-  if (!event || disabled) return null;
-  const male = Number(event.cover_rates?.male_stag) || 0;
-  const female = Number(event.cover_rates?.female_stag) || 0;
-  const couple = Number(event.cover_rates?.couple) || 0;
-  if (male <= 0 && female <= 0 && couple <= 0) return null;
+  if (!event) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-xs text-slate-500">
+        Select an event above to see the cover-rate breakdown.
+      </div>
+    );
+  }
+  const maleRate = Number(event.cover_rates?.male_stag) || 0;
+  const femaleRate = Number(event.cover_rates?.female_stag) || 0;
+  const coupleRate = Number(event.cover_rates?.couple) || 0;
+  const noRates = maleRate <= 0 && femaleRate <= 0 && coupleRate <= 0;
 
-  const chips: Array<{
-    key: string;
-    label: string;
-    amount: number;
-    asGender?: Gender;
-    paxValue?: number;
-  }> = [];
-  if (male > 0)   chips.push({ key: 'male',   label: 'Male',   amount: male,   asGender: 'male' });
-  if (female > 0) chips.push({ key: 'female', label: 'Female', amount: female, asGender: 'female' });
-  if (couple > 0) chips.push({ key: 'couple', label: 'Couple', amount: couple, paxValue: 2 });
+  if (noRates) {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+        This event has no cover rates configured. Set them in the Tickets section of the event wizard, then come back.
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-1.5">
-      <div className="text-[11px] font-medium text-slate-500">
-        Quick pick from <span className="text-slate-700 font-semibold">{event.name}</span>'s cover rates
+    <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3 space-y-2">
+      <StepperRow
+        label="Male"
+        sub={`₹${maleRate.toLocaleString('en-IN')} per person`}
+        count={male} unit={maleRate}
+        onDec={() => onMale(-1)} onInc={() => onMale(+1)}
+        disabled={disabled}
+      />
+      <StepperRow
+        label="Female"
+        sub={`₹${femaleRate.toLocaleString('en-IN')} per person`}
+        count={female} unit={femaleRate}
+        onDec={() => onFemale(-1)} onInc={() => onFemale(+1)}
+        disabled={disabled}
+      />
+      <StepperRow
+        label="Couple"
+        sub={`₹${coupleRate.toLocaleString('en-IN')} per couple · 2 pax`}
+        count={couples} unit={coupleRate}
+        onDec={() => onCouple(-1)} onInc={() => onCouple(+1)}
+        disabled={disabled}
+      />
+      <div className="border-t border-slate-200 pt-2 mt-1 flex items-baseline justify-between text-xs">
+        <div className="text-slate-500">
+          <span className="font-semibold text-slate-700">{derivedPax}</span>{' '}
+          {derivedPax === 1 ? 'guest' : 'guests'}
+        </div>
+        <div className="font-mono">
+          {disabled ? (
+            <span className="text-emerald-700 font-semibold">Complimentary · ₹0</span>
+          ) : (
+            <span className="text-slate-900 font-semibold">
+              ₹{autoTotal.toLocaleString('en-IN')}
+            </span>
+          )}
+        </div>
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        {chips.map((c) => (
-          <button
-            key={c.key}
-            type="button"
-            onClick={() => onPick({ amount: c.amount, asGender: c.asGender, paxValue: c.paxValue })}
-            className="text-xs font-medium px-3 py-1.5 rounded-full border bg-white border-slate-200 text-slate-700 hover:bg-brand-50 hover:border-brand-300 hover:text-brand-800 transition"
-          >
-            {c.label} ₹{c.amount.toLocaleString('en-IN')}
-            {c.paxValue && <span className="text-[10px] text-slate-400 ml-1">(2 pax)</span>}
-          </button>
-        ))}
+    </div>
+  );
+}
+
+function StepperRow({
+  label, sub, count, unit, disabled, onInc, onDec,
+}: {
+  label: string; sub: string; count: number; unit: number;
+  disabled?: boolean; onInc: () => void; onDec: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 bg-white rounded-lg border border-slate-200 px-3 py-2">
+      <div className="flex-1 min-w-0">
+        <div className={`text-sm font-semibold ${disabled ? 'text-slate-400' : 'text-slate-900'}`}>{label}</div>
+        <div className="text-[11px] text-slate-500">{sub}</div>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onDec}
+          disabled={disabled || count === 0}
+          aria-label={`Decrease ${label}`}
+          className="w-7 h-7 rounded-md border border-slate-300 text-slate-600 text-sm font-semibold hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
+        >
+          −
+        </button>
+        <div className="min-w-[28px] text-center text-sm font-semibold text-slate-900 tabular-nums">
+          {count}
+        </div>
+        <button
+          type="button"
+          onClick={onInc}
+          disabled={disabled}
+          aria-label={`Increase ${label}`}
+          className="w-7 h-7 rounded-md border border-slate-300 text-slate-600 text-sm font-semibold hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
+        >
+          +
+        </button>
+      </div>
+      <div className="min-w-[68px] text-right text-xs font-mono text-slate-600 tabular-nums">
+        {count > 0 && !disabled ? `₹${(count * unit).toLocaleString('en-IN')}` : '—'}
       </div>
     </div>
   );

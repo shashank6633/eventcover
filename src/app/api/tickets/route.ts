@@ -44,6 +44,15 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json().catch(() => ({}));
+  // Optional M/F/C breakdown — the offline form now ships these alongside
+  // pax + price. We trust the caller's pax/price totals (no server-side
+  // recompute) but normalize the counts so the ticket row carries clean
+  // non-negative ints. Missing keys default to 0.
+  const mix = (body.genderMix ?? {}) as { male?: unknown; female?: unknown; couple?: unknown };
+  const nn = (v: unknown) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+  };
   try {
     const ticket = createTicket({
       eventId: String(body.eventId || ''),
@@ -60,6 +69,9 @@ export async function POST(req: NextRequest) {
       paidOffline: !!body.paidOffline,
       complimentary: !!body.complimentary,
       createdBy: session.name,
+      maleCount: nn(mix.male),
+      femaleCount: nn(mix.female),
+      coupleCount: nn(mix.couple),
     });
 
     // ─── Affiliate attribution (best-effort) ──────────────────────────────

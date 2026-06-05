@@ -648,6 +648,16 @@ function migrate(db: Database.Database) {
   // NULL on rows issued before this feature shipped.
   addTicketCol('wallet_txn_id', 'TEXT');
 
+  // ─── Offline ticket M/F/C breakdown ─────────────────────────────────────
+  // The offline form now lets the operator enter a mixed party (e.g. 2M+1F+1C)
+  // in one shot. pax + price are derived from these counts × event cover rates.
+  // We persist the breakdown so the door-staff list shows "2M · 1F · 1C" next
+  // to the pax cell — useful for bouncers verifying gender ratios at entry.
+  // NULL/0 on tickets issued before this column existed.
+  addTicketCol('male_count',   'INTEGER DEFAULT 0');
+  addTicketCol('female_count', 'INTEGER DEFAULT 0');
+  addTicketCol('couple_count', 'INTEGER DEFAULT 0');
+
   // ─── Reservations: first-class data (event_id nullable + event_date col) ──
   // Originally reservations.event_id was NOT NULL, forcing every booking to
   // be tied to an existing event. That doesn't match how Reservego works:
