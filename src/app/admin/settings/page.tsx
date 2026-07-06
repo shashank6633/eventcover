@@ -13,6 +13,7 @@ import { NotificationsSection } from './_sections/NotificationsSection';
 import { TeamSection } from './_sections/TeamSection';
 import { ToolsSection } from './_sections/ToolsSection';
 import { BankDetailsSection } from './_sections/BankDetailsSection';
+import { IntegrationsSection } from './_sections/IntegrationsSection';
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Nav schema — 3 groups, 9 entries. Mirrors the Growezzy reference layout.
@@ -78,6 +79,14 @@ const Icons: Record<string, (p: IconProps) => JSX.Element> = {
       <path d="M3 9 12 4l9 5M5 10v8M9 10v8M15 10v8M19 10v8M3 20h18" />
     </svg>
   ),
+  // Chain-link icon for the new Integrations section — matches the
+  // "hooked into other services" semantic without duplicating any existing
+  // icon in the registry.
+  integrations: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className={p.className} aria-hidden>
+      <path d="M10 14a5 5 0 0 1 0-7l3-3a5 5 0 0 1 7 7l-1.5 1.5M14 10a5 5 0 0 1 0 7l-3 3a5 5 0 0 1-7-7l1.5-1.5" />
+    </svg>
+  ),
 };
 
 interface NavEntry {
@@ -111,6 +120,15 @@ const NAV: NavGroup[] = [
     ],
   },
   {
+    // Integrations — Razorpay, WhatsApp, Meta Pixel, Reservego. Each has
+    // its own dedicated page under /admin/settings/<name>; this section
+    // is the discoverable home that links out to them with status pills.
+    label: 'Integrations',
+    entries: [
+      { id: 'integrations', label: 'All integrations', icon: 'integrations' },
+    ],
+  },
+  {
     label: 'Finance',
     entries: [
       { id: 'bank', label: 'Bank Details', icon: 'bank' },
@@ -134,6 +152,7 @@ function ActiveSection({ id }: { id: string }) {
     case 'team':          return <TeamSection />;
     case 'tools':         return <ToolsSection />;
     case 'bank':          return <BankDetailsSection />;
+    case 'integrations':  return <IntegrationsSection />;
     default:
       return <WebsiteSection />;
   }
