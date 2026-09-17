@@ -638,6 +638,13 @@ async function fireCapiPurchase(
 
     const phone = (payment.payer_phone || '').trim();
     const digits = normalizePhoneForCapi(phone);
+    // Razorpay checkout requires an email, so payer_email is present on
+    // virtually every captured payment — yet it was never sent to Meta. Each
+    // extra hashed identifier raises the event's match quality (Meta's EMQ
+    // score), i.e. the odds this sale attributes to the ad that caused it.
+    // hashSha256Lowercase lowercases + trims before hashing, which is exactly
+    // Meta's required normalisation for the em field.
+    const email = (payment.payer_email || '').trim();
 
     // Retried: this is the paid-sale conversion, the single most valuable event
     // the venue reports. A retry only costs time when a send is already failing
@@ -654,6 +661,7 @@ async function fireCapiPurchase(
         // a valid SHA-256 that matches no human, and Meta scores a payload of
         // never-matching identifiers as poor-quality.
         ph: digits ? [hashSha256Lowercase(digits)] : undefined,
+        em: email ? [hashSha256Lowercase(email)] : undefined,
         fbp: req.cookies.get('_fbp')?.value || undefined,
         fbc: req.cookies.get('_fbc')?.value || undefined,
         client_ip_address: clientIp,
